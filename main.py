@@ -2386,6 +2386,7 @@ def main() -> None:
         zoom_start=14,
         control_scale=True,
         tiles="CartoDB positron",
+        prefer_canvas=True,
     )
 
     # Explicit layer stack (bottom -> top): roads, routes, stops.
@@ -2430,7 +2431,8 @@ def main() -> None:
       window.__activeRouteLine = L.polyline(coords, {
         pane: 'routesPane',
         weight: 6,
-        opacity: 0.9
+        opacity: 0.9,
+        smoothFactor: 1.5
       }).addTo(map);
 
       map.fitBounds(window.__activeRouteLine.getBounds(), { padding: [30, 30] });
@@ -2521,6 +2523,7 @@ def main() -> None:
                 pane="routesPane",
                 weight=3,
                 opacity=0.8,
+                smooth_factor=1.5,
                 tooltip=label,
                 color=color,
             )
@@ -2624,6 +2627,7 @@ def main() -> None:
                 weight=float(args.road_draw_weight),
                 opacity=0.75,
                 color=color,
+                smooth_factor=1.5,
                 tooltip=tip,
             )
             poly.add_to(fg_roads)
@@ -2669,6 +2673,7 @@ def main() -> None:
             weight=max(2.0, float(args.road_draw_weight) - 0.5),
             opacity=0.8,
             color=color,
+            smooth_factor=1.5,
             tooltip=tip,
         )
         poly.add_to(fg_tracks)
