@@ -226,15 +226,15 @@ def build_shapes_by_route(
     return out
 
 
-def build_route_segment_distance_labels(
+def build_stop_distance_details(
     trips: pd.DataFrame,
     stops: pd.DataFrame,
     stop_times: Optional[pd.DataFrame],
 ) -> Dict[str, List[dict]]:
-    """Build clickable points showing distance from each stop to the next stop per route.
+    """Build per-stop neighbour-distance details for popup display.
 
-    Returns route_id -> list of records with keys:
-      lat, lon, prev_stop_name, next_stop_name, distance_m.
+    Returns stop_id -> list of records with keys:
+      route_id, direction ("to_next"/"from_prev"), other_stop_name, distance_m.
     Uses one representative trip per route (most stops) to avoid excessive overlap.
     """
     if stop_times is None or stop_times.empty:
@@ -256,17 +256,14 @@ def build_route_segment_distance_labels(
         return {}
 
     stop_coords = (
-        stops[["stop_id", "stop_lat", "stop_lon"]]
+        stops[["stop_id", "stop_lat", "stop_lon", "stop_name"]]
         .dropna(subset=["stop_id", "stop_lat", "stop_lon"])
         .copy()
     )
     stop_coords["stop_id"] = stop_coords["stop_id"].astype(str)
     stop_coords["stop_lat"] = pd.to_numeric(stop_coords["stop_lat"], errors="coerce")
     stop_coords["stop_lon"] = pd.to_numeric(stop_coords["stop_lon"], errors="coerce")
-    if "stop_name" in stop_coords.columns:
-        stop_coords["stop_name"] = stop_coords["stop_name"].fillna("").astype(str)
-    else:
-        stop_coords["stop_name"] = ""
+    stop_coords["stop_name"] = stop_coords["stop_name"].fillna("").astype(str)
     stop_coords = stop_coords.dropna(subset=["stop_lat", "stop_lon"]).drop_duplicates(subset=["stop_id"])
     stop_coord_name_map: Dict[str, Tuple[float, float, str]] = {
         str(r["stop_id"]): (float(r["stop_lat"]), float(r["stop_lon"]), str(r["stop_name"]).strip())
@@ -284,7 +281,6 @@ def build_route_segment_distance_labels(
             continue
 
         stop_ids = best_trip_stops["stop_id"].astype(str).tolist()
-        labels: List[dict] = []
         for a, b in zip(stop_ids[:-1], stop_ids[1:]):
             if a == b:
                 continue
@@ -292,19 +288,23 @@ def build_route_segment_distance_labels(
                 continue
             lat_a, lon_a, name_a = stop_coord_name_map[a]
             lat_b, lon_b, name_b = stop_coord_name_map[b]
-            dist_m = haversine_m(lat_a, lon_a, lat_b, lon_b)
-            labels.append(
-                {
-                    "lat": (lat_a + lat_b) / 2.0,
-                    "lon": (lon_a + lon_b) / 2.0,
-                    "prev_stop_name": name_a or a,
-                    "next_stop_name": name_b or b,
-                    "distance_m": float(dist_m),
-                }
-            )
+            dist_m = float(haversine_m(lat_a, lon_a, lat_b, lon_b))
 
-        if labels:
-            out[str(route_id)] = labels
+            out.setdefault(a, []).append({
+                "route_id": str(route_id),
+                "direction": "to_next",
+                "other_stop_name": name_b or b,
+                "distance_m": dist_m,
+            })
+            out.setdefault(b, []).append({
+                "route_id": str(route_id),
+                "direction": "from_prev",
+                "other_stop_name": name_a or a,
+                "distance_m": dist_m,
+            })
+
+    for sid in list(out.keys()):
+        out[sid].sort(key=lambda x: (str(x.get("route_id", "")), str(x.get("direction", "")), str(x.get("other_stop_name", ""))))
 
     return out
 
@@ -1442,8 +1442,20 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const stopName = String(s.stopName || s.name || '').trim() || 'Unknown stop';
       const stopCode = String(s.stopCode || '').trim();
       const stopTitle = stopCode ? `${stopCode} — ${stopName}` : stopName;
+      const details = Array.isArray(s.distanceDetails) ? s.distanceDetails : [];
+      const detailItems = details.slice(0, 8).map(function(d) {
+        const dir = String(d && d.direction || '');
+        const other = String(d && d.other_stop_name || '').trim() || 'Unknown stop';
+        const dist = Number(d && d.distance_m || 0);
+        const prefix = dir === 'to_next' ? 'To next' : 'From previous';
+        return `<li>${prefix} <b>${other}</b>: ${Math.round(dist).toLocaleString()} m</li>`;
+      }).join('');
+      const detailHtml = detailItems
+        ? `<div style="margin-top:6px;"><b>Adjacent stop distances</b><ul style="margin:4px 0 0 16px; padding:0;">${detailItems}</ul></div>`
+        : '<div style="margin-top:6px; opacity:0.8;">No adjacent stop distance data.</div>';
+
       const mk = L.marker([s.lat, s.lon], { pane: "stopsPane", draggable: true, icon: dot, title: stopTitle || sid }).addTo(map);
-      mk.bindPopup(`<div style="font-size:12px;"><b>Stop:</b> ${stopTitle}</div>`);
+      mk.bindPopup(`<div style="font-size:12px;"><b>Stop:</b> ${stopTitle}${detailHtml}</div>`);
 
       mk.on('dragend', function(ev) {
         const ll = ev.target.getLatLng();
@@ -1671,6 +1683,12 @@ def main() -> None:
 
     if len(stops) > args.max_stops:
         stops = stops.iloc[: args.max_stops].copy()
+
+    stop_distance_details = build_stop_distance_details(
+        trips=trips,
+        stops=stops,
+        stop_times=stop_times,
+    )
 
     # --- load + filter addresses ---
     usecols = {
@@ -1946,6 +1964,7 @@ def main() -> None:
             "stopCode": stop_code,
             "name": title,
             "routeIds": sorted(list(stop_route_ids.get(sid, set()))),
+            "distanceDetails": stop_distance_details.get(sid, []),
         })
 
     # Expose stops to JS for draggable overlay
