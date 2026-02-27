@@ -990,26 +990,50 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     // Roads (we store per-poly distance as dM)
     if (window.__roadData) {
+      const stopHighlightActive = !!(window.__activeStopHighlight || window.__hoverStopHighlight);
       for (const r of window.__roadData) {
         const poly = getByName(r.polyRefName);
         if (!poly) continue;
         const c = distToColorHex(r.dM, maxM);
+        const inRange = (r.dM != null && isFinite(r.dM) && r.dM <= maxM);
         if (poly.setStyle) {
-          const nextOpacity = window.__showChangesOnly ? 0.0 : 0.75;
-          poly.setStyle({ color: c, opacity: nextOpacity });
+          const nextOpacity = window.__showChangesOnly
+            ? 0.0
+            : (stopHighlightActive ? (inRange ? 0.95 : 0.12) : 0.75);
+          const nextWeight = stopHighlightActive
+            ? (inRange ? 4.5 : 2.0)
+            : undefined;
+          const nextColor = stopHighlightActive
+            ? (inRange ? '#1565c0' : '#9e9e9e')
+            : c;
+          const style = { color: nextColor, opacity: nextOpacity };
+          if (nextWeight !== undefined) style.weight = nextWeight;
+          poly.setStyle(style);
         }
       }
     }
 
     // Tracks
     if (window.__trackData) {
+      const stopHighlightActive = !!(window.__activeStopHighlight || window.__hoverStopHighlight);
       for (const t of window.__trackData) {
         const poly = getByName(t.polyRefName);
         if (!poly) continue;
         const c = distToColorHex(t.dM, maxM);
+        const inRange = (t.dM != null && isFinite(t.dM) && t.dM <= maxM);
         if (poly.setStyle) {
-          const nextOpacity = window.__showChangesOnly ? 0.0 : 0.8;
-          poly.setStyle({ color: c, opacity: nextOpacity });
+          const nextOpacity = window.__showChangesOnly
+            ? 0.0
+            : (stopHighlightActive ? (inRange ? 0.98 : 0.10) : 0.8);
+          const nextWeight = stopHighlightActive
+            ? (inRange ? 4.0 : 1.8)
+            : undefined;
+          const nextColor = stopHighlightActive
+            ? (inRange ? '#00897b' : '#9e9e9e')
+            : c;
+          const style = { color: nextColor, opacity: nextOpacity };
+          if (nextWeight !== undefined) style.weight = nextWeight;
+          poly.setStyle(style);
         }
       }
     }
