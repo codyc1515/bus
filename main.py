@@ -9,8 +9,6 @@ Build a standalone HTML map showing:
 Click an address marker:
 - Popup shows nearest stop + distance in metres.
 - Distance is computed via road-network shortest path where possible.
-- Applies a configurable deduction (e.g. 20 m) per distinct road-name run traversed
-  to approximate off-road/footpath shortcuts.
 - Highlights the route taken on the map.
 
 NEW:
@@ -979,8 +977,6 @@ def main() -> None:
     ap.add_argument("--max-stops", type=int, default=20000, help="Max stops to plot")
 
     ap.add_argument("--densify-m", type=float, default=10.0, help="Densify road segments to this spacing (m). Lower = better snapping, heavier graph")
-    ap.add_argument("--deduct-per-road-m", type=float, default=20.0, help="Deduct this many metres per distinct road-name run traversed")
-
     ap.add_argument("--display-road-limit", type=int, default=20000, help="How many road features to draw (visual only). Graph building uses --max-roads")
     ap.add_argument("--draw-all-route-shapes", action="store_true", help="Draw all shapes per route (can be heavy). Default limits to 5 per route")
 
@@ -1407,9 +1403,6 @@ def main() -> None:
 
                     network_m = float(core_m + snapA + snapS)
 
-                    if road_segs is not None and road_segs > 0 and args.deduct_per_road_m > 0:
-                        network_m -= float(args.deduct_per_road_m) * float(road_segs)
-
                     network_m = max(network_m, direct_m, 0.0)
 
                     coords2: List[Tuple[float, float]] = [(lat, lon)]
@@ -1431,7 +1424,7 @@ def main() -> None:
                 roadseg_txt = "—"
                 route_coords = [(lat, lon), (stop_lat, stop_lon)]
             else:
-                method_txt = "roads (deducted)"
+                method_txt = "roads"
                 roadseg_txt = str(road_segs) if road_segs is not None else "?"
 
             dist_txt = f"{network_m:,.0f} m"
