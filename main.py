@@ -26,7 +26,7 @@ Usage example:
     --addresses lds-nz-addresses-CSV/nz-addresses.csv \
     --roads lds-nz-roads-road-section-geometry-CSV/nz-roads-road-section-geometry.csv \
     --gtfs gtfs \
-    --out map.html
+    --out index.html
 
 Notes:
 - Plotting all NZ addresses in one HTML is not practical. Use --bbox/--ward/--town/--ta and/or --max-addresses.
@@ -622,6 +622,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   window.__gradMaxM = 400;
   window.__activeRouteFilter = new Set();
   window.__showChangesOnly = false;
+  window.__activeStopHasMoveDelta = false;
 
   // ---------- helpers ----------
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -941,12 +942,14 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return { dist };
   }
 
-  function recalcLineDistancesFromStop(lineData, sf) {
+  function recalcLineDistancesFromStop(lineData, sf, sampleField) {
     if (!lineData || !sf || !Array.isArray(sf.dist)) return;
+    const targetField = (sampleField && String(sampleField)) ? String(sampleField) : 'sampleDM';
     for (const line of lineData) {
       const pts = Array.isArray(line.samples) ? line.samples : [];
       if (!pts.length) {
-        line.dM = null;
+        if (targetField === 'sampleDM') line.dM = null;
+        line[targetField] = [];
         continue;
       }
       let best = Infinity;
@@ -962,8 +965,10 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         sampleDM[i] = d;
         if (d < best) best = d;
       }
-      line.dM = isFinite(best) ? best : null;
-      line.sampleDM = sampleDM;
+      if (targetField === 'sampleDM') {
+        line.dM = isFinite(best) ? best : null;
+      }
+      line[targetField] = sampleDM;
     }
   }
 
@@ -973,6 +978,116 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     const map = ov._map;
     if (map && map.removeLayer) map.removeLayer(ov);
     line.reachableOverlay = null;
+  }
+
+  function clearWalkabilityDiffOverlays(line) {
+    if (!line || !line.walkabilityDiffOverlays) return;
+    const overlays = line.walkabilityDiffOverlays;
+    for (const key of Object.keys(overlays)) {
+      const ov = overlays[key];
+      const map = ov && ov._map;
+      if (map && map.removeLayer) map.removeLayer(ov);
+    }
+    line.walkabilityDiffOverlays = null;
+  }
+
+  function thresholdCrossT(d0, d1, maxM) {
+    if (!isFinite(d0) || !isFinite(d1)) return null;
+    const den = (d1 - d0);
+    if (!isFinite(den) || Math.abs(den) < 1e-9) return null;
+    const t = (maxM - d0) / den;
+    if (!isFinite(t) || t <= 0.0 || t >= 1.0) return null;
+    return t;
+  }
+
+  function blendPoint(p0, p1, t) {
+    return [
+      p0[0] + (p1[0] - p0[0]) * t,
+      p0[1] + (p1[1] - p0[1]) * t,
+    ];
+  }
+
+  function updateWalkabilityDiffOverlays(line, poly, maxM, oldSampleDM, newSampleDM) {
+    if (!line || !poly || !Array.isArray(line.samples) || !Array.isArray(oldSampleDM) || !Array.isArray(newSampleDM)) {
+      clearWalkabilityDiffOverlays(line);
+      return;
+    }
+
+    const pts = line.samples;
+    const buckets = { old: [], same: [], newer: [] };
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i];
+      const p1 = pts[i + 1];
+      if (!Array.isArray(p0) || p0.length < 2 || !Array.isArray(p1) || p1.length < 2) continue;
+
+      const old0 = oldSampleDM[i], old1 = oldSampleDM[i + 1];
+      const new0 = newSampleDM[i], new1 = newSampleDM[i + 1];
+      if (!isFinite(old0) || !isFinite(old1) || !isFinite(new0) || !isFinite(new1)) continue;
+
+      const cuts = [0.0, 1.0];
+      const tOld = thresholdCrossT(old0, old1, maxM);
+      const tNew = thresholdCrossT(new0, new1, maxM);
+      if (tOld != null) cuts.push(tOld);
+      if (tNew != null) cuts.push(tNew);
+      cuts.sort((a, b) => a - b);
+
+      for (let j = 0; j < cuts.length - 1; j++) {
+        const a = cuts[j];
+        const b = cuts[j + 1];
+        if (!(b > a + 1e-6)) continue;
+        const m = 0.5 * (a + b);
+        const oldM = old0 + (old1 - old0) * m;
+        const newM = new0 + (new1 - new0) * m;
+        const oldIn = oldM <= maxM;
+        const newIn = newM <= maxM;
+        if (!oldIn && !newIn) continue;
+
+        const seg = [blendPoint(p0, p1, a), blendPoint(p0, p1, b)];
+        if (oldIn && newIn) buckets.same.push(seg);
+        else if (oldIn) buckets.old.push(seg);
+        else buckets.newer.push(seg);
+      }
+    }
+
+    const map = poly._map;
+    if (!map) {
+      clearWalkabilityDiffOverlays(line);
+      return;
+    }
+
+    const styleByKey = {
+      old: { color: '#c62828', weight: 4.2, opacity: 0.95 },
+      same: { color: '#1565c0', weight: 4.2, opacity: 0.95 },
+      newer: { color: '#2e7d32', weight: 4.2, opacity: 0.95 },
+    };
+
+    if (!line.walkabilityDiffOverlays) line.walkabilityDiffOverlays = {};
+
+    for (const key of ['old', 'same', 'newer']) {
+      const segs = buckets[key];
+      const prev = line.walkabilityDiffOverlays[key] || null;
+      if (!segs.length) {
+        if (prev && prev._map) prev._map.removeLayer(prev);
+        delete line.walkabilityDiffOverlays[key];
+        continue;
+      }
+
+      const style = {
+        pane: 'roadsPane',
+        lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false,
+        ...styleByKey[key],
+      };
+
+      if (!prev) {
+        line.walkabilityDiffOverlays[key] = L.polyline(segs, style).addTo(map);
+      } else {
+        prev.setLatLngs(segs);
+        prev.setStyle(style);
+      }
+    }
   }
 
   function updateReachableOverlay(line, poly, maxM, color, weight, opacity) {
@@ -1098,8 +1213,13 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         }
         if (stopHighlightActive && !window.__showChangesOnly) {
           updateReachableOverlay(r, poly, maxM, '#1565c0', 4.5, 0.95);
+          clearWalkabilityDiffOverlays(r);
+        } else if (stopHighlightActive && window.__showChangesOnly && window.__activeStopHasMoveDelta && Array.isArray(r.baseSampleDM)) {
+          clearReachableOverlay(r);
+          updateWalkabilityDiffOverlays(r, poly, maxM, r.baseSampleDM, r.sampleDM);
         } else {
           clearReachableOverlay(r);
+          clearWalkabilityDiffOverlays(r);
         }
       }
     }
@@ -1127,8 +1247,13 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         }
         if (stopHighlightActive && !window.__showChangesOnly) {
           updateReachableOverlay(t, poly, maxM, '#1565c0', 4.0, 0.98);
+          clearWalkabilityDiffOverlays(t);
+        } else if (stopHighlightActive && window.__showChangesOnly && window.__activeStopHasMoveDelta && Array.isArray(t.baseSampleDM)) {
+          clearReachableOverlay(t);
+          updateWalkabilityDiffOverlays(t, poly, maxM, t.baseSampleDM, t.sampleDM);
         } else {
           clearReachableOverlay(t);
+          clearWalkabilityDiffOverlays(t);
         }
       }
     }
@@ -1706,6 +1831,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     function clearStopRoadTrackHighlight() {
       window.__activeStopHighlight = null;
+      window.__activeStopHasMoveDelta = false;
       recalcLineDistancesFromStops(window.__roadData);
       recalcLineDistancesFromStops(window.__trackData);
       recolorAll(window.__gradMaxM);
@@ -1753,8 +1879,22 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         return;
       }
 
+      let baseSf = null;
+      if (isFinite(s.__origLat) && isFinite(s.__origLon)) {
+        const baseSnap = nearestGraphNode(s.__origLat, s.__origLon);
+        if (baseSnap.idx != null && baseSnap.snapM != null) {
+          baseSf = runDijkstraFromSources([{ idx: baseSnap.idx, snapM: baseSnap.snapM }]);
+        }
+      }
+
       recalcLineDistancesFromStop(window.__roadData, sf);
       recalcLineDistancesFromStop(window.__trackData, sf);
+      recalcLineDistancesFromStop(window.__roadData, baseSf || sf, 'baseSampleDM');
+      recalcLineDistancesFromStop(window.__trackData, baseSf || sf, 'baseSampleDM');
+
+      const movedEnough = !!(isFinite(s.__origLat) && isFinite(s.__origLon)
+        && haversineM(s.__origLat, s.__origLon, s.lat, s.lon) > 0.5);
+      window.__activeStopHasMoveDelta = movedEnough;
       recolorAll(window.__gradMaxM);
 
       window.__activeStopHighlight = sid;
@@ -1780,6 +1920,10 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const stopName = String(s.stopName || s.name || '').trim() || 'Unknown stop';
       const stopCode = String(s.stopCode || '').trim();
       const stopTitle = stopCode ? `${stopCode} — ${stopName}` : stopName;
+      if (!isFinite(s.__origLat) || !isFinite(s.__origLon)) {
+        s.__origLat = s.lat;
+        s.__origLon = s.lon;
+      }
       const mk = L.marker([s.lat, s.lon], { pane: "stopsPane", draggable: true, icon: dot, title: stopTitle || sid }).addTo(map);
       mk.__stopRef = s;
 
@@ -1929,7 +2073,7 @@ def main() -> None:
         ),
     )
     ap.add_argument("--gtfs", default="gtfs", help="Path to GTFS folder (contains routes.txt, stops.txt, shapes.txt, trips.txt, ...)")
-    ap.add_argument("--out", default="map.html", help="Output HTML filename")
+    ap.add_argument("--out", default="index.html", help="Output HTML filename")
 
     ap.add_argument("--town", default=None, help="Filter addresses by town_city (e.g. 'Christchurch')")
     ap.add_argument("--ta", default=None, help="Filter addresses by territorial_authority (e.g. 'Christchurch City')")
