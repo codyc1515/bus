@@ -16,7 +16,7 @@ import argparse
 import json
 import math
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import folium
 import pandas as pd
@@ -123,7 +123,7 @@ def load_addresses(
     return addr
 
 
-def load_cycleways(cycleways_geojson: str, bbox: Optional[BBox], ward_geom) -> List[LineString]:
+def load_cycleways(cycleways_geojson: str, bbox: Optional[BBox], ward_geom) -> List[Dict[str, Any]]:
     with open(cycleways_geojson, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -140,13 +140,13 @@ def load_cycleways(cycleways_geojson: str, bbox: Optional[BBox], ward_geom) -> L
             }
         )
 
-    lines: List[LineString] = []
+    lines: List[Dict[str, Any]] = []
     for feat in data.get("features", []):
         props = feat.get("properties", {}) or {}
         service_status = str(props.get("ServiceStatus", "")).strip().casefold()
         public_relevance = str(props.get("PublicRelevance", "")).strip().casefold()
-        if service_status != "in service" or public_relevance != "public":
-            continue
+        is_inservice = service_status == "in service"
+        is_public = public_relevance == "public"
 
         geom_data = feat.get("geometry")
         if not geom_data:
@@ -160,9 +160,11 @@ def load_cycleways(cycleways_geojson: str, bbox: Optional[BBox], ward_geom) -> L
             continue
 
         if geom.geom_type == "LineString":
-            lines.append(geom)
+            lines.append({"line": geom, "is_inservice": is_inservice, "is_public": is_public})
         elif geom.geom_type == "MultiLineString":
-            lines.extend(list(geom.geoms))
+            lines.extend(
+                {"line": line, "is_inservice": is_inservice, "is_public": is_public} for line in geom.geoms
+            )
 
     if not lines:
         raise SystemExit("No cycleway geometries left after filtering.")
@@ -182,20 +184,30 @@ def compute_distances(addr: pd.DataFrame, cycle_lines: List[LineString]) -> pd.D
     return addr
 
 
-def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) -> None:
+def build_map(addr: pd.DataFrame, cycleways: List[Dict[str, Any]], out_html: str) -> None:
     centre_lat = float(addr["lat"].mean())
     centre_lon = float(addr["lon"].mean())
 
     m = folium.Map(location=[centre_lat, centre_lon], zoom_start=13, control_scale=True, tiles="CartoDB positron")
 
     cycle_fg = folium.FeatureGroup(name="Cycleways", show=True)
-    for line in cycle_lines:
-        folium.PolyLine(
+    cycleway_overlays = []
+    for cycleway in cycleways:
+        line = cycleway["line"]
+        overlay = folium.PolyLine(
             locations=[(lat, lon) for lon, lat in line.coords],
             weight=3,
             color="#0a66c2",
             opacity=0.8,
-        ).add_to(cycle_fg)
+        )
+        overlay.add_to(cycle_fg)
+        cycleway_overlays.append(
+            {
+                "layer": overlay.get_name(),
+                "isInservice": bool(cycleway["is_inservice"]),
+                "isPublic": bool(cycleway["is_public"]),
+            }
+        )
     cycle_fg.add_to(m)
 
     points = []
@@ -226,7 +238,7 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
 
     panel_html = f"""
     <div id="cycling-controls" style="
-      position: fixed; top: 12px; right: 12px; z-index: 9999;
+      position: fixed; bottom: 12px; left: 12px; z-index: 9999;
       background: white; border: 1px solid #999; border-radius: 6px;
       padding: 10px; width: 300px; font: 13px/1.35 sans-serif;
       box-shadow: 0 1px 8px rgba(0,0,0,0.25);">
@@ -239,14 +251,24 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
       Colour max distance: <span id="thrLabel">400</span>m
       <input id="thrSlider" type="range" min="400" max="800" step="10" value="400" style="width:100%;"/>
       <div style="margin-top:4px;font-size:12px;color:#555;">Green=near, Yellow=at threshold, Red=over</div>
+      <hr style="margin:8px 0;"/>
+      <label style="display:block; margin-bottom:4px;">
+        <input id="inserviceToggle" type="checkbox" checked /> In service
+      </label>
+      <label style="display:block;">
+        <input id="publicToggle" type="checkbox" checked /> Public
+      </label>
+      <div style="margin-top:4px;font-size:12px;color:#555;">These toggles control displayed cycleway segments.</div>
     </div>
     """
 
     points_json = json.dumps(points)
+    overlays_json = json.dumps(cycleway_overlays)
     script = f"""
     <script>
     (function() {{
       const points = {points_json};
+      const cyclewayOverlays = {overlays_json};
 
       function colorForDist(dist, maxM) {{
         if (!Number.isFinite(dist) || dist > maxM) return '#ff0000';
@@ -265,8 +287,25 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
         }}
       }}
 
+      function applyCyclewayFilter() {{
+        const inserviceOn = document.getElementById('inserviceToggle').checked;
+        const publicOn = document.getElementById('publicToggle').checked;
+        for (const overlay of cyclewayOverlays) {{
+          const show = (!inserviceOn || overlay.isInservice) && (!publicOn || overlay.isPublic);
+          const layer = window[overlay.layer];
+          if (!layer) continue;
+          layer.setStyle({{
+            opacity: show ? 0.8 : 0,
+            weight: show ? 3 : 0,
+          }});
+        }}
+      }}
+
       document.getElementById('thrSlider').addEventListener('input', (e) => recolor(Number(e.target.value)));
+      document.getElementById('inserviceToggle').addEventListener('change', applyCyclewayFilter);
+      document.getElementById('publicToggle').addEventListener('change', applyCyclewayFilter);
       recolor(400);
+      applyCyclewayFilter();
     }})();
     </script>
     """
@@ -300,10 +339,17 @@ def main() -> None:
         ward_geom=ward_geom,
         max_addresses=args.max_addresses,
     )
-    cycle_lines = load_cycleways(args.cycleways, bbox=bbox, ward_geom=ward_geom)
+    cycleways = load_cycleways(args.cycleways, bbox=bbox, ward_geom=ward_geom)
+    cycle_lines = [
+        cycleway["line"]
+        for cycleway in cycleways
+        if cycleway["is_inservice"] and cycleway["is_public"]
+    ]
+    if not cycle_lines:
+        raise SystemExit("No in-service public cycleway geometries left after filtering.")
     addr = compute_distances(addr, cycle_lines)
 
-    build_map(addr, cycle_lines, args.out)
+    build_map(addr, cycleways, args.out)
 
     within_400 = int((addr["nearest_cycleway_m"] <= 400).sum())
     within_800 = int((addr["nearest_cycleway_m"] <= 800).sum())
