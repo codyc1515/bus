@@ -845,7 +845,14 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       for (const a of window.__addrData) {
         const marker = getByName(a.markerRefName);
         if (!marker) continue;
-        const c = distToColorHex(a.distM, maxM);
+        const baseServed = !!a.baseServed;
+        const currentServed = (a.distM != null && isFinite(a.distM) && a.distM <= maxM);
+        let c = '#9e9e9e';
+        if (!baseServed && currentServed) {
+          c = '#2e7d32'; // gained service
+        } else if (baseServed && !currentServed) {
+          c = '#c62828'; // lost service
+        }
         if (marker.setStyle) {
           marker.setStyle({ color: c, fillColor: c });
         }
@@ -1147,6 +1154,12 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   function setStartingStatsToCurrent() {
     const nextStats = computeServedCounts(window.__gradMaxM);
     window.__startingSvcStats = nextStats;
+    if (window.__addrData) {
+      for (const a of window.__addrData) {
+        a.baseServed = (a.distM != null && isFinite(a.distM) && a.distM <= window.__gradMaxM);
+      }
+    }
+    recolorAll(window.__gradMaxM);
     renderStartingStats(nextStats);
   }
 
@@ -1492,6 +1505,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       installRouteFilter();
       // initial graph-based nearest-stop calculations + recolour/stats
       recalcAddressesFromStops(null, null, null);
+      setStartingStatsToCurrent();
       // add draggable stop overlays
       buildRouteSnapIndex();
       installDraggableStops(map);
@@ -2074,7 +2088,7 @@ def main() -> None:
                 Element(f"<script>window.__routeStore[{json.dumps(addr_id)}] = {route_json};</script>")
             )
 
-        marker_color = dist_to_green_red_hex(dist_for_colour_m, max_m=float(args.color_max_m))
+        marker_color = "#9e9e9e"
 
         # base popup with placeholders for client-side update
         popup_html_base = f"""
@@ -2125,6 +2139,7 @@ def main() -> None:
                 "basePopupHtml": popup_html_base,
                 "nearestStopName": nearest_stop_txt,
                 "distM": float(dist_for_colour_m) if dist_for_colour_m is not None else None,
+                "baseServed": False,
                 "methodology": method_txt,
             }
         )
