@@ -1264,8 +1264,9 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     let line = window.__logEntryEls[key] || null;
 
-    // If the action's net effect returned to zero, remove it from the log.
-    if (isFinite(dServed) && dServed === 0) {
+    // Remove only when there is no actual change at all.
+    // Keep ±0 rows when gains/losses offset each other (e.g. +9/-9).
+    if (gained === 0 && lost === 0) {
       if (line && line.parentNode) line.parentNode.removeChild(line);
       delete window.__logEntryEls[key];
       return;
