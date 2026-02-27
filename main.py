@@ -731,11 +731,30 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   function recomputeStopField() {
     const rt = ensureGraphRuntime();
     if (!rt || !window.__stopData) return null;
+    const EPS = 1e-6;
     const n = rt.nodes.length;
     const dist = new Array(n).fill(Infinity);
     const parent = new Array(n).fill(-1);
     const sourceStopIdx = new Array(n).fill(-1);
+    const sourceStopKey = new Array(n).fill('');
     const heap = [];
+
+    function stableStopKey(si, s) {
+      if (s && s.id != null && String(s.id).trim() !== '' && String(s.id) !== 'nan') return `id:${String(s.id)}`;
+      if (s && s.stopCode != null && String(s.stopCode).trim() !== '' && String(s.stopCode) !== 'nan') return `code:${String(s.stopCode)}`;
+      if (s && s.name != null && String(s.name).trim() !== '' && String(s.name) !== 'nan') return `name:${String(s.name)}`;
+      return `idx:${si}`;
+    }
+
+    function shouldPrefer(nextDist, nextKey, curDist, curKey) {
+      if (nextDist < (curDist - EPS)) return true;
+      if (Math.abs(nextDist - curDist) <= EPS) {
+        if (!curKey) return true;
+        if (!nextKey) return false;
+        return nextKey < curKey;
+      }
+      return false;
+    }
 
     function push(item) {
       heap.push(item);
@@ -773,11 +792,13 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       if (!stopAllowedByFilter(s)) continue;
       const snap = nearestGraphNode(s.lat, s.lon);
       if (snap.idx == null || snap.snapM == null) continue;
+      const key = stableStopKey(si, s);
       s.__snapNode = snap.idx;
       s.__snapM = snap.snapM;
-      if (snap.snapM < dist[snap.idx]) {
+      if (shouldPrefer(snap.snapM, key, dist[snap.idx], sourceStopKey[snap.idx])) {
         dist[snap.idx] = snap.snapM;
         sourceStopIdx[snap.idx] = si;
+        sourceStopKey[snap.idx] = key;
         parent[snap.idx] = -1;
         push([snap.snapM, snap.idx]);
       }
@@ -791,10 +812,14 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       if (d !== dist[u]) continue;
       for (const [v, w] of rt.adj[u]) {
         const nd = d + w;
-        if (nd < dist[v]) {
+        const srcIdx = sourceStopIdx[u];
+        const src = (srcIdx != null && srcIdx >= 0 && srcIdx < window.__stopData.length) ? window.__stopData[srcIdx] : null;
+        const srcKey = stableStopKey(srcIdx, src);
+        if (shouldPrefer(nd, srcKey, dist[v], sourceStopKey[v])) {
           dist[v] = nd;
           parent[v] = u;
-          sourceStopIdx[v] = sourceStopIdx[u];
+          sourceStopIdx[v] = srcIdx;
+          sourceStopKey[v] = srcKey;
           push([nd, v]);
         }
       }
