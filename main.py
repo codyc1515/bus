@@ -1490,6 +1490,15 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return `idx:${idx}`;
   }
 
+  function addressRouteKey(a, idx) {
+    if (!a) return `idx:${idx}`;
+    if (a.routeKey != null) {
+      const routeTxt = String(a.routeKey).trim();
+      if (routeTxt !== '' && routeTxt.toLowerCase() !== 'nan') return routeTxt;
+    }
+    return addressKey(a, idx);
+  }
+
   function servedDeltaBreakdown(thresholdM) {
     const baselineServedIds = new Set();
     const currentServedIds = new Set();
@@ -1632,7 +1641,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     const rt = ensureGraphRuntime();
     if (!sf || !rt) return;
 
-    for (const a of window.__addrData) {
+    for (let i = 0; i < window.__addrData.length; i++) {
+      const a = window.__addrData[i];
       const asnap = nearestGraphNode(a.lat, a.lon);
       let bestStop = null;
       let bestDist = null;
@@ -1657,7 +1667,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       }
 
       // Update highlight route on the graph.
-      if (window.__routeStore && a.id && bestStop && asnap.idx != null) {
+      const routeKey = addressRouteKey(a, i);
+      if (window.__routeStore && routeKey && bestStop && asnap.idx != null) {
         const coords = [[a.lat, a.lon]];
         let cur = asnap.idx;
         const seen = new Set();
@@ -1670,7 +1681,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
           cur = nx;
         }
         coords.push([bestStop.lat, bestStop.lon]);
-        window.__routeStore[a.id] = coords;
+        window.__routeStore[routeKey] = coords;
       }
     }
 
@@ -2248,7 +2259,9 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
 
     if (Array.isArray(window.__addrData)) {
-      for (const a of window.__addrData) {
+      for (let i = 0; i < window.__addrData.length; i++) {
+        const a = window.__addrData[i];
+        const routeKey = addressRouteKey(a, i);
         const c = L.circleMarker([a.lat, a.lon], {
           radius: 3,
           weight: 2,
@@ -2267,7 +2280,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
           c.bindPopup(html, { maxWidth: 360 });
         }
         c.on('click', function() {
-          if (window.__showRoute) window.__showRoute(map, a.id);
+          if (window.__showRoute) window.__showRoute(map, routeKey);
         });
         c.addTo(window.__addrLayerGroup);
         a.layerRef = c;
