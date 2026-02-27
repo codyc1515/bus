@@ -224,6 +224,81 @@ def build_shapes_by_route(
     return out
 
 
+def build_route_segment_distance_labels(
+    trips: pd.DataFrame,
+    stops: pd.DataFrame,
+    stop_times: Optional[pd.DataFrame],
+) -> Dict[str, List[dict]]:
+    """Build label points showing distance from each stop to the next stop per route.
+
+    Returns route_id -> list of label records with keys: lat, lon, text.
+    Uses one representative trip per route (most stops) to avoid excessive overlap.
+    """
+    if stop_times is None or stop_times.empty:
+        return {}
+    if not {"trip_id", "route_id"}.issubset(trips.columns):
+        return {}
+    needed = {"trip_id", "stop_id", "stop_sequence"}
+    if not needed.issubset(stop_times.columns):
+        return {}
+
+    trip_routes = trips[["trip_id", "route_id"]].dropna().astype(str)
+    merged = stop_times[["trip_id", "stop_id", "stop_sequence"]].dropna().copy()
+    merged["trip_id"] = merged["trip_id"].astype(str)
+    merged["stop_id"] = merged["stop_id"].astype(str)
+    merged["stop_sequence"] = pd.to_numeric(merged["stop_sequence"], errors="coerce")
+    merged = merged.dropna(subset=["stop_sequence"])
+    merged = merged.merge(trip_routes, on="trip_id", how="inner")
+    if merged.empty:
+        return {}
+
+    stop_coords = (
+        stops[["stop_id", "stop_lat", "stop_lon"]]
+        .dropna(subset=["stop_id", "stop_lat", "stop_lon"])
+        .copy()
+    )
+    stop_coords["stop_id"] = stop_coords["stop_id"].astype(str)
+    stop_coords["stop_lat"] = pd.to_numeric(stop_coords["stop_lat"], errors="coerce")
+    stop_coords["stop_lon"] = pd.to_numeric(stop_coords["stop_lon"], errors="coerce")
+    stop_coords = stop_coords.dropna(subset=["stop_lat", "stop_lon"]).drop_duplicates(subset=["stop_id"])
+    stop_coord_map: Dict[str, Tuple[float, float]] = {
+        str(r["stop_id"]): (float(r["stop_lat"]), float(r["stop_lon"])) for _, r in stop_coords.iterrows()
+    }
+
+    out: Dict[str, List[dict]] = {}
+    for route_id, route_grp in merged.groupby("route_id"):
+        best_trip_stops: Optional[pd.DataFrame] = None
+        for _, trip_grp in route_grp.groupby("trip_id"):
+            ordered = trip_grp.sort_values("stop_sequence")
+            if best_trip_stops is None or len(ordered) > len(best_trip_stops):
+                best_trip_stops = ordered
+        if best_trip_stops is None or len(best_trip_stops) < 2:
+            continue
+
+        stop_ids = best_trip_stops["stop_id"].astype(str).tolist()
+        labels: List[dict] = []
+        for a, b in zip(stop_ids[:-1], stop_ids[1:]):
+            if a == b:
+                continue
+            if a not in stop_coord_map or b not in stop_coord_map:
+                continue
+            lat_a, lon_a = stop_coord_map[a]
+            lat_b, lon_b = stop_coord_map[b]
+            dist_m = haversine_m(lat_a, lon_a, lat_b, lon_b)
+            labels.append(
+                {
+                    "lat": (lat_a + lat_b) / 2.0,
+                    "lon": (lon_a + lon_b) / 2.0,
+                    "text": f"{dist_m:,.0f} m",
+                }
+            )
+
+        if labels:
+            out[str(route_id)] = labels
+
+    return out
+
+
 # ----------------------------
 # Roads graph building
 # ----------------------------
@@ -1313,11 +1388,12 @@ def main() -> None:
 
     # stop_id -> set(route_id), via stop_times + trips
     stop_route_ids: Dict[str, Set[str]] = {}
+    stop_times: Optional[pd.DataFrame] = None
     stop_times_path = os.path.join(args.gtfs, "stop_times.txt")
     if os.path.exists(stop_times_path) and {"trip_id", "route_id"}.issubset(trips.columns):
-        stop_times = pd.read_csv(stop_times_path, usecols=["trip_id", "stop_id"], dtype=str)
+        stop_times = pd.read_csv(stop_times_path, usecols=["trip_id", "stop_id", "stop_sequence"], dtype=str)
         trip_routes = trips[["trip_id", "route_id"]].dropna().astype(str)
-        stop_trip_routes = stop_times.merge(trip_routes, on="trip_id", how="inner")
+        stop_trip_routes = stop_times[["trip_id", "stop_id"]].merge(trip_routes, on="trip_id", how="inner")
         for sid, grp in stop_trip_routes.groupby("stop_id"):
             stop_route_ids[str(sid)] = {
                 str(x) for x in grp["route_id"].astype(str).tolist() if str(x).strip() and str(x).lower() != "nan"
@@ -1353,6 +1429,12 @@ def main() -> None:
 
     stop_latlons = stops[["stop_lat", "stop_lon"]].to_numpy(dtype=np.float64)
     stop_kd = cKDTree(stop_latlons) if len(stop_latlons) else None
+
+    route_segment_labels = build_route_segment_distance_labels(
+        trips=trips,
+        stops=stops,
+        stop_times=stop_times,
+    )
 
     # --- load + filter addresses ---
     usecols = {
@@ -1555,6 +1637,7 @@ def main() -> None:
 
     # --- layer: route shapes ---
     fg_routes = folium.FeatureGroup(name="Bus routes", show=True)
+    fg_route_dist_labels = folium.FeatureGroup(name="Route segment distances", show=True)
     route_shape_refs: List[str] = []
     routes_idx = routes.set_index("route_id", drop=False) if "route_id" in routes.columns else None
 
@@ -1613,7 +1696,25 @@ def main() -> None:
             poly_route.add_to(fg_routes)
             route_shape_refs.append(poly_route.get_name())
 
+        for seg in route_segment_labels.get(str(route_id), []):
+            seg_text = str(seg.get("text", "")).strip()
+            if not seg_text:
+                continue
+            folium.Marker(
+                location=[float(seg["lat"]), float(seg["lon"])],
+                icon=folium.DivIcon(
+                    icon_size=(80, 14),
+                    icon_anchor=(40, 7),
+                    html=(
+                        "<div style=\"font-size:10px;font-weight:700;color:#111;"
+                        "text-shadow:0 0 2px #fff, 0 0 3px #fff;white-space:nowrap;\">"
+                        f"{seg_text}</div>"
+                    ),
+                ),
+            ).add_to(fg_route_dist_labels)
+
     fg_routes.add_to(m)
+    fg_route_dist_labels.add_to(m)
 
     # Expose route polylines to JS so we can click to add a new stop
     m.get_root().html.add_child(Element(f"<script>window.__routeShapeRefs = {json.dumps(route_shape_refs)};</script>"))
