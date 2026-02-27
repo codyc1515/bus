@@ -1435,7 +1435,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       if (window.__stopMarkers[sid]) return window.__stopMarkers[sid];
 
       snapStopToRouteLine(s);
-      const mk = L.marker([s.lat, s.lon], { pane: "stopsPane", draggable: true, icon: dot, title: s.name || sid }).addTo(map);
+      const stopName = String(s.stopName || s.name || '').trim() || 'Unknown stop';
+      const stopCode = String(s.stopCode || '').trim();
+      const stopTitle = stopCode ? `${stopCode} — ${stopName}` : stopName;
+      const mk = L.marker([s.lat, s.lon], { pane: "stopsPane", draggable: true, icon: dot, title: stopTitle || sid }).addTo(map);
+      mk.bindPopup(`<div style="font-size:12px;"><b>Stop:</b> ${stopTitle}</div>`);
 
       mk.on('dragend', function(ev) {
         const ll = ev.target.getLatLng();
@@ -1664,12 +1668,6 @@ def main() -> None:
     if len(stops) > args.max_stops:
         stops = stops.iloc[: args.max_stops].copy()
 
-    route_segment_labels = build_route_segment_distance_labels(
-        trips=trips,
-        stops=stops,
-        stop_times=stop_times,
-    )
-
     # --- load + filter addresses ---
     usecols = {
         "WKT",
@@ -1856,7 +1854,6 @@ def main() -> None:
 
     # --- layer: route shapes ---
     fg_routes = folium.FeatureGroup(name="Bus routes", show=True)
-    fg_route_dist_labels = folium.FeatureGroup(name="Route segment distances (click)", show=True)
     route_shape_refs: List[str] = []
     route_shape_meta: List[dict] = []
     routes_idx = routes.set_index("route_id", drop=False) if "route_id" in routes.columns else None
@@ -1919,32 +1916,7 @@ def main() -> None:
             route_shape_refs.append(ref_name)
             route_shape_meta.append({"refName": ref_name, "routeId": str(route_id)})
 
-        for seg in route_segment_labels.get(str(route_id), []):
-            prev_name = str(seg.get("prev_stop_name", "")).strip() or "Unknown stop"
-            next_name = str(seg.get("next_stop_name", "")).strip() or "Unknown stop"
-            distance_m = seg.get("distance_m")
-            if distance_m is None:
-                continue
-            popup_html = (
-                "<div style='font-size:12px;'>"
-                f"<div><b>Previous stop:</b> {prev_name}</div>"
-                f"<div><b>Next stop:</b> {next_name}</div>"
-                f"<div><b>Distance:</b> {float(distance_m):,.0f} m</div>"
-                "</div>"
-            )
-            folium.CircleMarker(
-                location=[float(seg["lat"]), float(seg["lon"])],
-                radius=4,
-                weight=1,
-                color="#1f4e79",
-                fill=True,
-                fill_opacity=0.85,
-                tooltip="Click for stop-to-stop distance",
-                popup=folium.Popup(popup_html, max_width=320),
-            ).add_to(fg_route_dist_labels)
-
     fg_routes.add_to(m)
-    fg_route_dist_labels.add_to(m)
 
     # Expose route polylines to JS so we can click to add a new stop
     m.get_root().html.add_child(Element(f"<script>window.__routeShapeRefs = {json.dumps(route_shape_refs)};</script>"))
@@ -1966,6 +1938,8 @@ def main() -> None:
             "id": sid,
             "lat": lat_s,
             "lon": lon_s,
+            "stopName": stop_name,
+            "stopCode": stop_code,
             "name": title,
             "routeIds": sorted(list(stop_route_ids.get(sid, set()))),
         })
