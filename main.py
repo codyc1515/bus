@@ -856,16 +856,20 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         continue;
       }
       let best = Infinity;
-      for (const pt of pts) {
+      const sampleDM = new Array(pts.length).fill(null);
+      for (let i = 0; i < pts.length; i++) {
+        const pt = pts[i];
         if (!Array.isArray(pt) || pt.length < 2) continue;
         const snap = nearestGraphNode(pt[0], pt[1]);
         if (snap.idx == null || snap.snapM == null) continue;
         const graphD = sf.dist[snap.idx];
         if (!isFinite(graphD)) continue;
         const d = snap.snapM + graphD;
+        sampleDM[i] = d;
         if (d < best) best = d;
       }
       line.dM = isFinite(best) ? best : null;
+      line.sampleDM = sampleDM;
     }
   }
 
@@ -946,17 +950,100 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         continue;
       }
       let best = Infinity;
-      for (const pt of pts) {
+      const sampleDM = new Array(pts.length).fill(null);
+      for (let i = 0; i < pts.length; i++) {
+        const pt = pts[i];
         if (!Array.isArray(pt) || pt.length < 2) continue;
         const snap = nearestGraphNode(pt[0], pt[1]);
         if (snap.idx == null || snap.snapM == null) continue;
         const graphD = sf.dist[snap.idx];
         if (!isFinite(graphD)) continue;
         const d = snap.snapM + graphD;
+        sampleDM[i] = d;
         if (d < best) best = d;
       }
       line.dM = isFinite(best) ? best : null;
+      line.sampleDM = sampleDM;
     }
+  }
+
+  function clearReachableOverlay(line) {
+    if (!line || !line.reachableOverlay) return;
+    const ov = line.reachableOverlay;
+    const map = ov._map;
+    if (map && map.removeLayer) map.removeLayer(ov);
+    line.reachableOverlay = null;
+  }
+
+  function updateReachableOverlay(line, poly, maxM, color, weight, opacity) {
+    if (!line || !poly || !Array.isArray(line.samples) || !Array.isArray(line.sampleDM)) {
+      clearReachableOverlay(line);
+      return;
+    }
+
+    const pts = line.samples;
+    const dists = line.sampleDM;
+    const segments = [];
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i];
+      const p1 = pts[i + 1];
+      const d0 = dists[i];
+      const d1 = dists[i + 1];
+      if (!Array.isArray(p0) || p0.length < 2 || !Array.isArray(p1) || p1.length < 2) continue;
+      if (!isFinite(d0) || !isFinite(d1)) continue;
+
+      const in0 = d0 <= maxM;
+      const in1 = d1 <= maxM;
+
+      if (in0 && in1) {
+        segments.push([[p0[0], p0[1]], [p1[0], p1[1]]]);
+        continue;
+      }
+
+      if (in0 === in1) continue;
+      const den = (d1 - d0);
+      if (!isFinite(den) || Math.abs(den) < 1e-9) continue;
+      const t = clamp((maxM - d0) / den, 0.0, 1.0);
+      const cp = [
+        p0[0] + (p1[0] - p0[0]) * t,
+        p0[1] + (p1[1] - p0[1]) * t,
+      ];
+      if (in0) {
+        segments.push([[p0[0], p0[1]], cp]);
+      } else {
+        segments.push([cp, [p1[0], p1[1]]]);
+      }
+    }
+
+    if (!segments.length) {
+      clearReachableOverlay(line);
+      return;
+    }
+
+    const map = poly._map;
+    if (!map) {
+      clearReachableOverlay(line);
+      return;
+    }
+
+    const overlayStyle = {
+      pane: 'roadsPane',
+      color: color,
+      weight: weight,
+      opacity: opacity,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false,
+    };
+
+    if (!line.reachableOverlay) {
+      line.reachableOverlay = L.polyline(segments, overlayStyle).addTo(map);
+      return;
+    }
+
+    line.reachableOverlay.setLatLngs(segments);
+    line.reachableOverlay.setStyle(overlayStyle);
   }
 
   function recolorAll(maxM) {
@@ -995,20 +1082,24 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         const poly = getByName(r.polyRefName);
         if (!poly) continue;
         const c = distToColorHex(r.dM, maxM);
-        const inRange = (r.dM != null && isFinite(r.dM) && r.dM <= maxM);
         if (poly.setStyle) {
           const nextOpacity = window.__showChangesOnly
             ? 0.0
-            : (stopHighlightActive ? (inRange ? 0.95 : 0.12) : 0.75);
+            : (stopHighlightActive ? 0.12 : 0.75);
           const nextWeight = stopHighlightActive
-            ? (inRange ? 4.5 : 2.0)
+            ? 2.0
             : undefined;
           const nextColor = stopHighlightActive
-            ? (inRange ? '#1565c0' : '#9e9e9e')
+            ? '#9e9e9e'
             : c;
           const style = { color: nextColor, opacity: nextOpacity };
           if (nextWeight !== undefined) style.weight = nextWeight;
           poly.setStyle(style);
+        }
+        if (stopHighlightActive && !window.__showChangesOnly) {
+          updateReachableOverlay(r, poly, maxM, '#1565c0', 4.5, 0.95);
+        } else {
+          clearReachableOverlay(r);
         }
       }
     }
@@ -1020,20 +1111,24 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         const poly = getByName(t.polyRefName);
         if (!poly) continue;
         const c = distToColorHex(t.dM, maxM);
-        const inRange = (t.dM != null && isFinite(t.dM) && t.dM <= maxM);
         if (poly.setStyle) {
           const nextOpacity = window.__showChangesOnly
             ? 0.0
-            : (stopHighlightActive ? (inRange ? 0.98 : 0.10) : 0.8);
+            : (stopHighlightActive ? 0.10 : 0.8);
           const nextWeight = stopHighlightActive
-            ? (inRange ? 4.0 : 1.8)
+            ? 1.8
             : undefined;
           const nextColor = stopHighlightActive
-            ? (inRange ? '#00897b' : '#9e9e9e')
+            ? '#9e9e9e'
             : c;
           const style = { color: nextColor, opacity: nextOpacity };
           if (nextWeight !== undefined) style.weight = nextWeight;
           poly.setStyle(style);
+        }
+        if (stopHighlightActive && !window.__showChangesOnly) {
+          updateReachableOverlay(t, poly, maxM, '#1565c0', 4.0, 0.98);
+        } else {
+          clearReachableOverlay(t);
         }
       }
     }
