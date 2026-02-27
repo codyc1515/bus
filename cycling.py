@@ -6,8 +6,8 @@ stops with cycleways. It computes each address's nearest-cycleway distance and
 builds an interactive HTML map with:
 - cycleway polylines,
 - address markers coloured by distance,
-- a 200-800m threshold slider for live recolouring,
-- summary counts for <=200m, <=800m, and 200-800m.
+- a 100-1000m threshold slider for live recolouring,
+- summary counts for <=100m, <=1000m, and 100-1000m.
 """
 
 from __future__ import annotations
@@ -26,6 +26,9 @@ from shapely import wkt
 from shapely.geometry import LineString, Point, shape
 from shapely.ops import transform
 
+MIN_DISTANCE_M = 100
+MAX_DISTANCE_M = 1000
+
 
 @dataclass(frozen=True)
 class BBox:
@@ -39,7 +42,7 @@ def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
-def dist_to_green_red_hex(dist_m: Optional[float], max_m: float = 200.0) -> str:
+def dist_to_green_red_hex(dist_m: Optional[float], max_m: float = float(MIN_DISTANCE_M)) -> str:
     if dist_m is None or not math.isfinite(dist_m):
         return "#ff0000"
     if dist_m > max_m:
@@ -195,7 +198,7 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
     points = []
     for _, r in addr.iterrows():
         dist = float(r["nearest_cycleway_m"])
-        color = dist_to_green_red_hex(dist, 200.0)
+        color = dist_to_green_red_hex(dist, float(MIN_DISTANCE_M))
         popup = folium.Popup(
             f"<b>{r.get('full_address', 'Address')}</b><br/>"
             f"Nearest cycleway: {dist:.1f} m",
@@ -214,9 +217,11 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
         marker.add_to(m)
         points.append({"dist": dist, "marker": marker.get_name()})
 
-    within_200 = int((addr["nearest_cycleway_m"] <= 200).sum())
-    within_800 = int((addr["nearest_cycleway_m"] <= 800).sum())
-    between_200_800 = int(((addr["nearest_cycleway_m"] >= 200) & (addr["nearest_cycleway_m"] <= 800)).sum())
+    within_min = int((addr["nearest_cycleway_m"] <= MIN_DISTANCE_M).sum())
+    within_max = int((addr["nearest_cycleway_m"] <= MAX_DISTANCE_M).sum())
+    between_min_max = int(
+        ((addr["nearest_cycleway_m"] >= MIN_DISTANCE_M) & (addr["nearest_cycleway_m"] <= MAX_DISTANCE_M)).sum()
+    )
 
     panel_html = f"""
     <div id="cycling-controls" style="
@@ -226,12 +231,12 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
       box-shadow: 0 1px 8px rgba(0,0,0,0.25);">
       <b>Cycleway accessibility</b><br/>
       Total addresses: {len(addr)}<br/>
-      ≤200m: <span id="sum200">{within_200}</span><br/>
-      ≤800m: <span id="sum800">{within_800}</span><br/>
-      200–800m: <span id="sum200800">{between_200_800}</span>
+      ≤{MIN_DISTANCE_M}m: <span id="sumMin">{within_min}</span><br/>
+      ≤{MAX_DISTANCE_M}m: <span id="sumMax">{within_max}</span><br/>
+      {MIN_DISTANCE_M}–{MAX_DISTANCE_M}m: <span id="sumRange">{between_min_max}</span>
       <hr style="margin:8px 0;"/>
-      Colour max distance: <span id="thrLabel">200</span>m
-      <input id="thrSlider" type="range" min="200" max="800" step="10" value="200" style="width:100%;"/>
+      Colour max distance: <span id="thrLabel">{MIN_DISTANCE_M}</span>m
+      <input id="thrSlider" type="range" min="{MIN_DISTANCE_M}" max="{MAX_DISTANCE_M}" step="10" value="{MIN_DISTANCE_M}" style="width:100%;"/>
       <div style="margin-top:4px;font-size:12px;color:#555;">Green=near, Yellow=at threshold, Red=over</div>
     </div>
     """
@@ -260,7 +265,7 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
       }}
 
       document.getElementById('thrSlider').addEventListener('input', (e) => recolor(Number(e.target.value)));
-      recolor(200);
+      recolor({MIN_DISTANCE_M});
     }})();
     </script>
     """
@@ -299,15 +304,17 @@ def main() -> None:
 
     build_map(addr, cycle_lines, args.out)
 
-    within_200 = int((addr["nearest_cycleway_m"] <= 200).sum())
-    within_800 = int((addr["nearest_cycleway_m"] <= 800).sum())
-    between_200_800 = int(((addr["nearest_cycleway_m"] >= 200) & (addr["nearest_cycleway_m"] <= 800)).sum())
+    within_min = int((addr["nearest_cycleway_m"] <= MIN_DISTANCE_M).sum())
+    within_max = int((addr["nearest_cycleway_m"] <= MAX_DISTANCE_M).sum())
+    between_min_max = int(
+        ((addr["nearest_cycleway_m"] >= MIN_DISTANCE_M) & (addr["nearest_cycleway_m"] <= MAX_DISTANCE_M)).sum()
+    )
 
     print(f"Wrote {args.out}")
     print(f"Total addresses analysed: {len(addr)}")
-    print(f"Addresses within 200m of a cycleway: {within_200}")
-    print(f"Addresses within 800m of a cycleway: {within_800}")
-    print(f"Addresses between 200m and 800m of a cycleway: {between_200_800}")
+    print(f"Addresses within {MIN_DISTANCE_M}m of a cycleway: {within_min}")
+    print(f"Addresses within {MAX_DISTANCE_M}m of a cycleway: {within_max}")
+    print(f"Addresses between {MIN_DISTANCE_M}m and {MAX_DISTANCE_M}m of a cycleway: {between_min_max}")
 
 
 if __name__ == "__main__":
