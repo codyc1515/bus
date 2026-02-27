@@ -1490,6 +1490,24 @@ def main() -> None:
                 "snap_m": float(math.hypot(x_st - x_en, y_st - y_en)),
             }
 
+    # Precompute stop records to avoid repeated DataFrame iteration in hot loops.
+    stop_records: List[dict] = []
+    for _, s in stops.iterrows():
+        stop_id = str(s.get("stop_id", "")).strip()
+        stop_name = str(s.get("stop_name", "")).strip()
+        stop_code = str(s.get("stop_code", "")).strip()
+        stop_txt = f"{stop_code} — {stop_name}" if stop_code and stop_code != "nan" else stop_name
+        stop_records.append(
+            {
+                "id": stop_id,
+                "lat": float(s["stop_lat"]),
+                "lon": float(s["stop_lon"]),
+                "txt": stop_txt,
+                "node": stop_node_meta.get(stop_id, {}).get("node"),
+                "snap_m": float(stop_node_meta.get(stop_id, {}).get("snap_m", 0.0)),
+            }
+        )
+
     # --- choose map centre ---
     centre_lat = float(addr["lat"].mean())
     centre_lon = float(addr["lon"].mean())
@@ -1791,7 +1809,6 @@ def main() -> None:
             start_node = None
             snap_a_m = 0.0
             lengths = None
-            paths = None
 
             if node_kd is not None and len(nodes_arr) and len(g.nodes) > 0:
                 start_node, _ = snap_to_graph_node(node_kd, nodes_arr, lon, lat)
@@ -1799,73 +1816,98 @@ def main() -> None:
                 x_sn, y_sn = tf_to_m.transform(start_node[1], start_node[0])
                 snap_a_m = float(math.hypot(x_a - x_sn, y_a - y_sn))
                 lengths = nx.single_source_dijkstra_path_length(g, start_node, weight="weight")
-                paths = nx.single_source_dijkstra_path(g, start_node, weight="weight")
 
             best_distance: Optional[float] = None
             best_route_coords: Optional[List[Tuple[float, float]]] = None
             best_method = "N/A"
             best_roadseg = "N/A"
             best_stop_txt = "No stops loaded"
+            best_stop_node = None
+            best_stop_lat = None
+            best_stop_lon = None
+            best_direct_m: Optional[float] = None
+            best_network_m: Optional[float] = None
 
-            for _, srow in stops.iterrows():
-                stop_lat = float(srow["stop_lat"])
-                stop_lon = float(srow["stop_lon"])
-                stop_name = str(srow.get("stop_name", "")).strip()
-                stop_code = str(srow.get("stop_code", "")).strip()
-                stop_id = str(srow.get("stop_id", "")).strip()
-                stop_txt = f"{stop_code} — {stop_name}" if stop_code and stop_code != "nan" else stop_name
+            for srec in stop_records:
+                stop_lat = srec["lat"]
+                stop_lon = srec["lon"]
+                stop_id = srec["id"]
+                stop_txt = srec["txt"]
 
                 direct_m = haversine_m(lat, lon, stop_lat, stop_lon)
                 cand_m = direct_m
                 cand_method = "straight-line"
                 cand_roadseg = "—"
-                cand_route: List[Tuple[float, float]] = [(lat, lon), (stop_lat, stop_lon)]
+                cand_node = None
+                cand_network_m = None
 
                 if (
                     start_node is not None
                     and lengths is not None
-                    and paths is not None
-                    and stop_id in stop_node_meta
+                    and srec["node"] is not None
                 ):
-                    end_node = stop_node_meta[stop_id]["node"]
-                    if end_node in lengths and end_node in paths:
+                    end_node = srec["node"]
+                    if end_node in lengths:
                         core_m = float(lengths[end_node])
-                        node_path = paths[end_node]
-                        snap_s_m = float(stop_node_meta[stop_id]["snap_m"])
+                        snap_s_m = srec["snap_m"]
                         network_m = max(core_m + snap_a_m + snap_s_m, direct_m, 0.0)
-
-                        uses_track = False
-                        for u, v in zip(node_path[:-1], node_path[1:]):
-                            data = g.get_edge_data(u, v) or {}
-                            if str(data.get("kind", "road")) == "track":
-                                uses_track = True
-                                break
-
-                        coords2: List[Tuple[float, float]] = [(lat, lon)]
-                        coords2 += [(n[1], n[0]) for n in node_path]
-                        coords2 += [(stop_lat, stop_lon)]
-                        cleaned: List[Tuple[float, float]] = []
-                        last = None
-                        for p in coords2:
-                            if last is None or p != last:
-                                cleaned.append(p)
-                            last = p
-                        if len(cleaned) >= 2:
-                            cand_route = cleaned
-
+                        cand_network_m = network_m
+                        cand_node = end_node
                         cand_m = network_m
-                        cand_method = "roads + tracks" if uses_track else "roads"
-                        cand_roadseg = str(max(0, len(node_path) - 1))
+                        cand_method = "roads"
 
                 if stop_id and stop_id.lower() != "nan":
                     stop_metrics[stop_id] = {"distM": float(cand_m), "methodology": cand_method}
 
                 if best_distance is None or cand_m < best_distance:
                     best_distance = float(cand_m)
-                    best_route_coords = cand_route
                     best_method = cand_method
                     best_roadseg = cand_roadseg
                     best_stop_txt = stop_txt
+                    best_stop_node = cand_node
+                    best_stop_lat = stop_lat
+                    best_stop_lon = stop_lon
+                    best_direct_m = direct_m
+                    best_network_m = cand_network_m
+
+            if (
+                start_node is not None
+                and best_stop_node is not None
+                and best_stop_lat is not None
+                and best_stop_lon is not None
+                and best_direct_m is not None
+                and best_network_m is not None
+            ):
+                try:
+                    node_path = nx.shortest_path(g, start_node, best_stop_node, weight="weight")
+
+                    uses_track = False
+                    for u, v in zip(node_path[:-1], node_path[1:]):
+                        data = g.get_edge_data(u, v) or {}
+                        if str(data.get("kind", "road")) == "track":
+                            uses_track = True
+                            break
+
+                    coords2: List[Tuple[float, float]] = [(lat, lon)]
+                    coords2 += [(n[1], n[0]) for n in node_path]
+                    coords2 += [(best_stop_lat, best_stop_lon)]
+                    cleaned: List[Tuple[float, float]] = []
+                    last = None
+                    for p in coords2:
+                        if last is None or p != last:
+                            cleaned.append(p)
+                        last = p
+                    if len(cleaned) >= 2:
+                        best_route_coords = cleaned
+
+                    best_method = "roads + tracks" if uses_track else "roads"
+                    best_roadseg = str(max(0, len(node_path) - 1))
+                    best_distance = max(float(best_network_m), float(best_direct_m), 0.0)
+                except Exception:
+                    # Keep straight-line/default route if path extraction fails.
+                    best_route_coords = [(lat, lon), (best_stop_lat, best_stop_lon)]
+            elif best_stop_lat is not None and best_stop_lon is not None:
+                best_route_coords = [(lat, lon), (best_stop_lat, best_stop_lon)]
 
             if best_distance is not None:
                 nearest_stop_txt = best_stop_txt
