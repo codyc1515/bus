@@ -965,6 +965,15 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return null;
   }
 
+  function escapeHtml(text) {
+    return String(text == null ? '' : text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function updateLegendMax(maxM) {
     const lbl = document.getElementById('__gradMaxLabel');
     if (lbl) lbl.textContent = `${maxM} m`;
@@ -1991,15 +2000,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       recalcLineDistancesFromStops(window.__roadData);
       recalcLineDistancesFromStops(window.__trackData);
       recolorAll(window.__gradMaxM);
-    }
-
-    function escapeHtml(text) {
-      return String(text == null ? '' : text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
     }
 
     function ensureAddressSnapIndex() {
