@@ -117,9 +117,13 @@ class BBox:
 def parse_bbox(vals: Optional[List[float]]) -> Optional[BBox]:
     if not vals:
         return None
-    if len(vals) != 4:
-        raise ValueError("--bbox must be 4 numbers: min_lon min_lat max_lon max_lat")
-    min_lon, min_lat, max_lon, max_lat = vals
+    if len(vals) == 3:
+        min_lon, min_lat, max_lon = vals
+        max_lat = min_lat + (max_lon - min_lon)
+    elif len(vals) == 4:
+        min_lon, min_lat, max_lon, max_lat = vals
+    else:
+        raise ValueError("--bbox must be 3 or 4 numbers: min_lon min_lat max_lon [max_lat]")
     if min_lon > max_lon:
         raise ValueError("bbox invalid: min_lon > max_lon")
     if min_lat > max_lat:
@@ -1561,7 +1565,13 @@ def main() -> None:
 
     ap.add_argument("--town", default=None, help="Filter addresses by town_city (e.g. 'Christchurch')")
     ap.add_argument("--ta", default=None, help="Filter addresses by territorial_authority (e.g. 'Christchurch City')")
-    ap.add_argument("--bbox", nargs=4, type=float, default=None, help="min_lon min_lat max_lon max_lat")
+    ap.add_argument(
+        "--bbox",
+        nargs="+",
+        type=float,
+        default=[172.536417, -43.561454, 172.555088],
+        help="min_lon min_lat max_lon [max_lat]",
+    )
     ap.add_argument("--ward", default=None, help="Filter by ward name from Ward_(OpenData).geojson (e.g. 'Hornby')")
     ap.add_argument("--ward-geojson", default="Ward_(OpenData).geojson", help="Path to Ward_(OpenData).geojson")
     ap.add_argument(
