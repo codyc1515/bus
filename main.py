@@ -650,7 +650,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       if (!marker) continue;
       // Replace only the fields we control. Keep the rest of the HTML.
       const dTxt = (a.distM == null) ? 'N/A' : `${Math.round(a.distM).toLocaleString()} m`;
-            const nTxt = a.nearestStopName || 'N/A';
+      const nTxt = a.nearestStopName || 'N/A';
       const html = a.basePopupHtml
         .replace('__NEAREST__', nTxt)
         .replace('__DIST__', dTxt)
@@ -834,18 +834,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         }
       });
     }
-  });
-
-    for (const s of window.__stopData) {
-      const mk = L.marker([s.lat, s.lon], { draggable: true, icon: dot, title: s.name || s.id }).addTo(map);
-      mk.on('dragend', function(ev) {
-        const ll = ev.target.getLatLng();
-        s.lat = ll.lat;
-        s.lon = ll.lng;
-        const label = (s.name || s.id || 'stop');
-        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${(s.id || label)}`);
-      });
-    }
   }
 
   document.addEventListener('DOMContentLoaded', function() {
@@ -985,7 +973,7 @@ def main() -> None:
 
     # --- load roads + build graph ---
 
-        # --- load roads + build graph ---
+    # --- load roads + build graph ---
     # Roads: now using lds-nz-roads-road-section-geometry-CSV
     # Filter out rows with end_lifespan (these no longer exist)
     road_usecols = [
@@ -1079,7 +1067,7 @@ def main() -> None:
         )
     )
 
-        # --- layer: route shapes ---
+    # --- layer: route shapes ---
     fg_routes = folium.FeatureGroup(name="Bus routes", show=True)
     route_shape_refs: List[str] = []
     routes_idx = routes.set_index("route_id", drop=False) if "route_id" in routes.columns else None
