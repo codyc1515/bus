@@ -609,10 +609,41 @@ def linestring_sample_points_latlon(
     ls: LineString,
     tf_to_m: Transformer,
     sample_every_m: float = 60.0,
+    max_points: int = 24,
 ) -> List[List[float]]:
     """Sample a LineString into [lat, lon] points for browser-side distance updates."""
-    dense = densify_linestring(ls, max_segment_m=sample_every_m, tf_to_m=tf_to_m)
+    spacing = max(1.0, float(sample_every_m))
+    if max_points >= 2:
+        ls_len = float(ls.length)
+        if ls_len > 0:
+            spacing = max(spacing, ls_len / float(max_points - 1))
+    dense = densify_linestring(ls, max_segment_m=spacing, tf_to_m=tf_to_m)
+    if len(dense) > max_points:
+        step = max(1, int(math.ceil(len(dense) / max_points)))
+        dense = dense[::step]
+        if dense[-1] != list(ls.coords)[-1]:
+            dense.append(list(ls.coords)[-1])
     return [[float(lat), float(lon)] for lon, lat in dense]
+
+
+def compact_json(data) -> str:
+    """Serialize JSON with minimal whitespace for smaller HTML output."""
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+
+
+def simplify_linestring_for_draw(
+    ls: LineString,
+    simplify_m: float,
+) -> LineString:
+    """Simplify a WGS84 LineString using an approximate metre-to-degree tolerance."""
+    if simplify_m <= 0:
+        return ls
+    coords = list(ls.coords)
+    if len(coords) < 3:
+        return ls
+    tol_deg = float(simplify_m) / 111_320.0
+    simp = ls.simplify(tol_deg, preserve_topology=False)
+    return simp if simp.geom_type == "LineString" else ls
 
 
 def add_ui_and_interaction_js(m: folium.Map) -> None:
@@ -2146,6 +2177,9 @@ def main() -> None:
     ap.add_argument("--color-max-m", type=float, default=400.0, help="Initial colour scale clamp (slider allows 400..800)")
     ap.add_argument("--road-draw-weight", type=float, default=3.0, help="Road line thickness")
     ap.add_argument("--road-stop-sample-m", type=float, default=25.0, help="Sampling spacing (m) when estimating road distance to nearest stop")
+    ap.add_argument("--max-road-samples", type=int, default=24, help="Max sampled points retained per road/track for nearest-stop calculations")
+    ap.add_argument("--draw-simplify-m", type=float, default=0.0, help="Simplify rendered road/track geometry by this tolerance (metres); 0 disables")
+    ap.add_argument("--graph-precision", type=int, default=6, help="Decimal places for graph coordinates/weights in embedded JSON")
     ap.add_argument("--tracks-geojson", default="Track_(OpenData).geojson", help="Optional GeoJSON file of walkable tracks to include in routing graph")
 
     args = ap.parse_args()
@@ -2323,7 +2357,7 @@ def main() -> None:
     # For snap-distance to metres + densify sampling
     tf_to_m = Transformer.from_crs("EPSG:4326", "EPSG:2193", always_xy=False)
 
-    track_lines = load_track_lines_geojson(args.tracks_geojson, bbox=bbox)
+    track_lines = load_track_lines_geojson(args.tracks_geojson, bbox=effective_bbox)
     if track_lines:
         track_nodes = add_lines_to_graph(
             g,
@@ -2362,19 +2396,20 @@ def main() -> None:
     # Expose routable graph to JS so all interactive distance calculations
     # are done consistently client-side via roads + tracks.
     node_to_idx = {n: i for i, n in enumerate(g.nodes())}
-    graph_nodes_js = [[float(lat), float(lon)] for (lon, lat) in g.nodes()]
+    p = max(0, int(args.graph_precision))
+    graph_nodes_js = [[round(float(lat), p), round(float(lon), p)] for (lon, lat) in g.nodes()]
     graph_edges_js = [
-        [int(node_to_idx[u]), int(node_to_idx[v]), float(data.get("weight", 0.0))]
+        [int(node_to_idx[u]), int(node_to_idx[v]), round(float(data.get("weight", 0.0)), p)]
         for u, v, data in g.edges(data=True)
     ]
     m.get_root().html.add_child(
         Element(
-            f"<script>window.__graphData = {json.dumps({'nodes': graph_nodes_js, 'edges': graph_edges_js})};</script>"
+            f"<script>window.__graphData = {compact_json({'nodes': graph_nodes_js, 'edges': graph_edges_js})};</script>"
         )
     )
 
     # Store folium map variable name for JS
-    m.get_root().html.add_child(Element(f"<script>window.__foliumMapName = {json.dumps(m.get_name())};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__foliumMapName = {compact_json(m.get_name())};</script>"))
 
     # JS for route highlighting
     m.get_root().html.add_child(
@@ -2441,7 +2476,27 @@ def main() -> None:
             route_options_js.append({"value": route_value, "label": label})
             route_value_to_ids_js[route_value] = route_ids_for_label
 
+    def route_line_in_scope(line: List[Tuple[float, float]]) -> bool:
+        if not line:
+            return False
+        if effective_bbox and not any(effective_bbox.contains_lonlat(float(lon), float(lat)) for (lat, lon) in line):
+            return False
+        if ward_geom is not None:
+            try:
+                if not ward_geom.intersects(LineString([(float(lon), float(lat)) for (lat, lon) in line])):
+                    return False
+            except Exception:
+                return False
+        return True
+
     for route_id, polylines in shapes_by_route.items():
+        if available_route_ids_in_bounds and str(route_id) not in available_route_ids_in_bounds:
+            continue
+
+        scoped_polylines = [line for line in polylines if route_line_in_scope(line)]
+        if not scoped_polylines:
+            continue
+
         if routes_idx is not None and route_id in routes_idx.index:
             r = routes_idx.loc[route_id]
             color = str(r.get("route_color", "")).strip()
@@ -2460,7 +2515,7 @@ def main() -> None:
             label = f"route {route_id}"
 
         max_shapes = None if args.draw_all_route_shapes else 5
-        for line in (polylines if max_shapes is None else polylines[:max_shapes]):
+        for line in (scoped_polylines if max_shapes is None else scoped_polylines[:max_shapes]):
             poly_route = folium.PolyLine(
                 locations=[(lat, lon) for (lat, lon) in line],
                 pane="routesPane",
@@ -2477,8 +2532,8 @@ def main() -> None:
     fg_routes.add_to(m)
 
     # Expose route polylines to JS so we can click to add a new stop
-    m.get_root().html.add_child(Element(f"<script>window.__routeShapeRefs = {json.dumps(route_shape_refs)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeShapeMeta = {json.dumps(route_shape_meta)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeShapeRefs = {compact_json(route_shape_refs)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeShapeMeta = {compact_json(route_shape_meta)};</script>"))
 
     # --- stops data for draggable JS overlay (no static stop markers) ---
     stop_js_data: List[dict] = []
@@ -2506,9 +2561,9 @@ def main() -> None:
         })
 
     # Expose stops to JS for draggable overlay
-    m.get_root().html.add_child(Element(f"<script>window.__stopData = {json.dumps(stop_js_data)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeOptions = {json.dumps(route_options_js)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeValueToIds = {json.dumps(route_value_to_ids_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__stopData = {compact_json(stop_js_data)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeOptions = {compact_json(route_options_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeValueToIds = {compact_json(route_value_to_ids_js)};</script>"))
 
     # --- layer: roads (visual + coloured by nearest stop distance) ---
     fg_roads = folium.FeatureGroup(name="Roads (distance to stop)", show=True)
@@ -2546,7 +2601,8 @@ def main() -> None:
         else:
             continue
 
-        for ls in lines:
+        for ls_raw in lines:
+            ls = simplify_linestring_for_draw(ls_raw, float(args.draw_simplify_m))
             coords = list(ls.coords)
             if len(coords) < 2:
                 continue
@@ -2580,17 +2636,19 @@ def main() -> None:
                     ls,
                     tf_to_m=tf_to_m,
                     sample_every_m=max(30.0, float(args.road_stop_sample_m)),
+                    max_points=max(4, int(args.max_road_samples)),
                 ),
             })
 
     fg_roads.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__roadData = {json.dumps(road_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__roadData = {compact_json(road_js)};</script>"))
 
     # --- layer: tracks (visual + coloured by nearest stop distance) ---
     fg_tracks = folium.FeatureGroup(name="Tracks (distance to stop)", show=True)
     track_js: List[dict] = []
 
-    for ls, track_name in track_lines:
+    for ls_raw, track_name in track_lines:
+        ls = simplify_linestring_for_draw(ls_raw, float(args.draw_simplify_m))
         coords = list(ls.coords)
         if len(coords) < 2:
             continue
@@ -2622,11 +2680,12 @@ def main() -> None:
                 ls,
                 tf_to_m=tf_to_m,
                 sample_every_m=max(30.0, float(args.road_stop_sample_m)),
+                max_points=max(4, int(args.max_road_samples)),
             ),
         })
 
     fg_tracks.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__trackData = {json.dumps(track_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__trackData = {compact_json(track_js)};</script>"))
 
     # --- layer: addresses with nearest-stop distance ---
     fg_addr = folium.FeatureGroup(name="Addresses", show=True)
@@ -2650,9 +2709,9 @@ def main() -> None:
 
         # Register route in JS store (only for this address)
         if route_coords is not None and addr_id:
-            route_json = json.dumps([[float(lat), float(lon)] for (lat, lon) in route_coords])
+            route_json = compact_json([[float(lat), float(lon)] for (lat, lon) in route_coords])
             m.get_root().html.add_child(
-                Element(f"<script>window.__routeStore[{json.dumps(addr_id)}] = {route_json};</script>")
+                Element(f"<script>window.__routeStore[{compact_json(addr_id)}] = {route_json};</script>")
             )
 
         marker_color = "#9e9e9e"
@@ -2712,7 +2771,7 @@ def main() -> None:
         )
 
     fg_addr.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__addrData = {json.dumps(addr_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__addrData = {compact_json(addr_js)};</script>"))
 
     # Emit the click bindings in one place (ensures marker JS variables exist)
     if bind_js:
