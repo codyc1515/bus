@@ -2263,8 +2263,11 @@ def main() -> None:
         if not ward_names:
             raise SystemExit(f"No wards found in {args.ward_geojson}")
 
-        print(f"Generating {len(ward_names)} ward maps into: {args.all_wards_out_dir}")
-        for ward_name in ward_names:
+        skip_ward_names = {"banks peninsula"}
+        wards_to_generate = [name for name in ward_names if name.strip().lower() not in skip_ward_names]
+
+        print(f"Generating {len(wards_to_generate)} ward maps into: {args.all_wards_out_dir}")
+        for ward_name in wards_to_generate:
             out_file = os.path.join(args.all_wards_out_dir, ward_name_to_filename(ward_name))
             cmd = [
                 sys.executable,
