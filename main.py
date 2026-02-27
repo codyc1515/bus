@@ -2702,9 +2702,10 @@ def main() -> None:
     )
 
     # Explicit layer stack (bottom -> top): roads, routes, stops.
-    folium.map.CustomPane("roadsPane", z_index=410).add_to(m)
-    folium.map.CustomPane("routesPane", z_index=420).add_to(m)
-    folium.map.CustomPane("stopsPane", z_index=430).add_to(m)
+    # pointer_events=True is required for click/drag handlers on layers in custom panes.
+    folium.map.CustomPane("roadsPane", z_index=410, pointer_events=True).add_to(m)
+    folium.map.CustomPane("routesPane", z_index=420, pointer_events=True).add_to(m)
+    folium.map.CustomPane("stopsPane", z_index=430, pointer_events=True).add_to(m)
 
     # Expose routable graph to JS so all interactive distance calculations
     # are done consistently client-side via roads + tracks.
