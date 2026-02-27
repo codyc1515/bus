@@ -468,7 +468,11 @@ def build_road_graph(
     return g, nodes
 
 
-def load_track_lines_geojson(path: str, bbox: Optional[BBox]) -> List[Tuple[LineString, str]]:
+def load_track_lines_geojson(
+    path: str,
+    bbox: Optional[BBox],
+    ward_geom=None,
+) -> List[Tuple[LineString, str]]:
     """Load track geometries from GeoJSON and return routable linework.
 
     For polygonal tracks, we use the polygon boundary to approximate walkable
@@ -520,6 +524,8 @@ def load_track_lines_geojson(path: str, bbox: Optional[BBox]) -> List[Tuple[Line
             if len(coords) < 2:
                 continue
             if bbox and not any(bbox.contains_lonlat(x, y) for (x, y) in coords):
+                continue
+            if ward_geom is not None and not ward_geom.intersects(ls):
                 continue
             out.append((ls, name))
 
@@ -2471,7 +2477,11 @@ def main() -> None:
     # For snap-distance to metres + densify sampling
     tf_to_m = Transformer.from_crs("EPSG:4326", "EPSG:2193", always_xy=False)
 
-    track_lines = load_track_lines_geojson(args.tracks_geojson, bbox=effective_bbox)
+    track_lines = load_track_lines_geojson(
+        args.tracks_geojson,
+        bbox=effective_bbox,
+        ward_geom=ward_geom,
+    )
     if track_lines:
         track_nodes = add_lines_to_graph(
             g,
