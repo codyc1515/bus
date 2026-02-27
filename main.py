@@ -551,16 +551,26 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     panel.innerHTML = `
       <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+        <div style="font-weight:700;">Starting metrics</div>
+        <div style="color:#555; opacity:0.9;">≤ <span id="__svcStartThreshold">—</span> m</div>
+      </div>
+      <div style="margin-top:8px; display:grid; grid-template-columns: 1fr auto; gap:6px 10px;">
+        <div>Bus stops in area</div><div id="__svcStartStops" style="font-weight:700; text-align:right;">—</div>
+        <div>Addresses served</div><div id="__svcStartServed" style="font-weight:700; text-align:right;">—</div>
+        <div>Addresses not served</div><div id="__svcStartUnserved" style="font-weight:700; text-align:right;">—</div>
+      </div>
+      <div style="margin-top:10px; font-weight:700;">Change log</div>
+      <div id="__svcLog" style="margin-top:6px; max-height:260px; overflow:auto; padding-right:4px;"></div>
+      <div style="margin-top:10px; font-weight:700;">Totals after changes</div>
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-top:6px;">
         <div style="font-weight:700;">Serviceable area</div>
-        <div style="color:#555; opacity:0.9;">≤ <span id="__svcThreshold">${Math.round(window.__gradMaxM)}</span> m</div>
+        <div style="color:#555; opacity:0.9;">≤ <span id="__svcThreshold">—</span> m</div>
       </div>
       <div style="margin-top:8px; display:grid; grid-template-columns: 1fr auto; gap:6px 10px;">
         <div>Bus stops in area</div><div id="__svcStops" style="font-weight:700; text-align:right;">—</div>
         <div>Addresses served</div><div id="__svcServed" style="font-weight:700; text-align:right;">—</div>
         <div>Addresses not served</div><div id="__svcUnserved" style="font-weight:700; text-align:right;">—</div>
       </div>
-      <div style="margin-top:10px; font-weight:700;">Change log</div>
-      <div id="__svcLog" style="margin-top:6px; max-height:260px; overflow:auto; padding-right:4px;"></div>
     `;
 
     document.body.appendChild(panel);
@@ -621,8 +631,26 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     if (un) un.textContent = nextStats.unserved.toLocaleString();
   }
 
+  function renderStartingStats(startStats) {
+    ensureStatsPanel();
+    const th = document.getElementById('__svcStartThreshold');
+    const st = document.getElementById('__svcStartStops');
+    const se = document.getElementById('__svcStartServed');
+    const un = document.getElementById('__svcStartUnserved');
+
+    if (th) th.textContent = `${Math.round(startStats.thresholdM)}`;
+    if (st) st.textContent = startStats.stops.toLocaleString();
+    if (se) se.textContent = startStats.served.toLocaleString();
+    if (un) un.textContent = startStats.unserved.toLocaleString();
+  }
+
   function updateSummary(reason, logKey) {
     const nextStats = computeServedCounts(window.__gradMaxM);
+
+    if (!window.__startingSvcStats) {
+      window.__startingSvcStats = nextStats;
+      renderStartingStats(nextStats);
+    }
 
     // For per-item log lines (e.g., a specific bus stop), compute deltas against
     // the last time THAT item was updated, not whatever the most recent action was.
