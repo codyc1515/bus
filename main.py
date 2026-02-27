@@ -2330,12 +2330,12 @@ def main() -> None:
         help="Optional route filter by route_id/route_short_name (comma-separated, e.g. 100,101).",
     )
 
-    ap.add_argument("--max-addresses", type=int, default=20000, help="Max addresses to load/plot after filtering")
-    ap.add_argument("--max-roads", type=int, default=200000, help="Max road rows to consider (after bbox filter)")
-    ap.add_argument("--max-stops", type=int, default=20000, help="Max stops to plot")
+    ap.add_argument("--max-addresses", type=int, default=99999, help="Max addresses to load/plot after filtering")
+    ap.add_argument("--max-roads", type=int, default=99999, help="Max road rows to consider (after bbox filter)")
+    ap.add_argument("--max-stops", type=int, default=99999, help="Max stops to plot")
 
     ap.add_argument("--densify-m", type=float, default=10.0, help="Densify road segments to this spacing (m). Lower = better snapping, heavier graph")
-    ap.add_argument("--display-road-limit", type=int, default=20000, help="How many road features to draw (visual only). Graph building uses --max-roads")
+    ap.add_argument("--display-road-limit", type=int, default=99999, help="How many road features to draw (visual only). Graph building uses --max-roads")
     ap.add_argument("--draw-all-route-shapes", action="store_true", help="Draw all shapes per route (can be heavy). Default limits to 5 per route")
 
     ap.add_argument("--color-max-m", type=float, default=400.0, help="Initial colour scale clamp (slider allows 400..800)")
