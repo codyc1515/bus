@@ -552,6 +552,12 @@ def connect_track_nodes_to_graph(
 
     base_kd = cKDTree(base_nodes)
 
+    # Build a metres-space KDTree for track nodes so we can stitch small gaps
+    # between separate track features (e.g. neighbouring polygons/segments).
+    track_list = [(float(lon), float(lat)) for lon, lat in track_nodes]
+    track_xy = np.array([tf_to_m.transform(lat, lon) for lon, lat in track_list], dtype=float)
+    track_kd = cKDTree(track_xy) if len(track_xy) else None
+
     for lon, lat in track_nodes:
         _, idx = base_kd.query([lon, lat], k=1)
         n2 = (float(base_nodes[int(idx), 0]), float(base_nodes[int(idx), 1]))
@@ -569,6 +575,27 @@ def connect_track_nodes_to_graph(
             continue
 
         g.add_edge(n1, n2, weight=w, road="track connector", kind="track")
+
+    # Also connect each track node to nearby track nodes to allow routing that
+    # traverses multiple track features to reach a destination.
+    if track_kd is None:
+        return
+
+    for i, (lon, lat) in enumerate(track_list):
+        n1 = (lon, lat)
+        neighbours = track_kd.query_ball_point(track_xy[i], r=max_link_m)
+        for j in neighbours:
+            if j == i:
+                continue
+            n2 = track_list[int(j)]
+            if n1 == n2 or g.has_edge(n1, n2):
+                continue
+            dx = float(track_xy[int(j), 0] - track_xy[i, 0])
+            dy = float(track_xy[int(j), 1] - track_xy[i, 1])
+            w = float(math.hypot(dx, dy))
+            if w <= 0.0 or w > max_link_m:
+                continue
+            g.add_edge(n1, n2, weight=w, road="track connector", kind="track")
 
 
 def snap_to_graph_node(kdtree: cKDTree, nodes_arr: np.ndarray, lon: float, lat: float) -> Tuple[Tuple[float, float], float]:
