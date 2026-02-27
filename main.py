@@ -1937,7 +1937,7 @@ def main() -> None:
         "--bbox",
         nargs="+",
         type=float,
-        default=[172.536417, -43.561454, 172.555088],
+        #default=[172.536417, -43.561454, 172.555088],
         help="min_lon min_lat max_lon [max_lat]",
     )
     ap.add_argument("--ward", default=None, help="Filter by ward name from Ward_(OpenData).geojson (e.g. 'Hornby')")
