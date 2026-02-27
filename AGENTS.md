@@ -1,1 +1,2 @@
 - Avoid looking through the contents of the .csv or .geojson files if possible to speed up performance.
+- Install the python requirements.txt file before trying to do anything first.
