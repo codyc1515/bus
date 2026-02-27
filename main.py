@@ -591,7 +591,7 @@ def connect_track_nodes_to_graph(
     track_nodes: Set[Tuple[float, float]],
     base_nodes: np.ndarray,
     tf_to_m: Transformer,
-    max_link_m: float = 20.0,
+    max_link_m: float = 50.0,
     max_track_neighbours: int = 2,
 ) -> None:
     """Stitch track nodes to nearest existing graph nodes when very close.
@@ -2377,7 +2377,7 @@ def main() -> None:
     ap.add_argument(
         "--track-link-max-m",
         type=float,
-        default=20.0,
+        default=50.0,
         help="Max distance (m) for connector edges that stitch track nodes to roads/nearby tracks",
     )
     ap.add_argument(
