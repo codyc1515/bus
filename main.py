@@ -51,7 +51,7 @@ import pandas as pd
 import folium
 import networkx as nx
 from shapely import wkt
-from shapely.geometry import LineString, Point, shape
+from shapely.geometry import LineString, Point, box, shape
 from pyproj import Transformer
 from scipy.spatial import cKDTree
 from folium import Element
@@ -180,6 +180,56 @@ def ward_name_to_filename(ward_name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", ward_name.strip().lower()).strip("-")
     slug = slug or "ward"
     return f"{slug}.html"
+
+
+def road_label_from_row(row: pd.Series) -> str:
+    """Best-effort road label for logging/display."""
+    rsid = str(row.get("road_section_id", "")).strip()
+    rtype = str(row.get("road_type", "")).strip()
+    gcls = str(row.get("geometry_class", "")).strip()
+    rid = str(row.get("road_section_geometry_id", "")).strip()
+    parts = [p for p in [rtype, gcls] if p and p.lower() != "nan"]
+    base = " / ".join(parts) if parts else "road"
+    if rsid and rsid.lower() != "nan":
+        return f"{base} (section {rsid})"
+    if rid and rid.lower() != "nan":
+        return f"{base} (geom {rid})"
+    return base
+
+
+def road_row_in_scope(geom_wkt: str, bbox: Optional[BBox], ward_geom) -> bool:
+    """Return True when a road geometry intersects the current area filter."""
+    try:
+        sh = wkt.loads(geom_wkt)
+    except Exception:
+        return False
+
+    if bbox is not None:
+        bb_poly = box(bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat)
+        if not sh.intersects(bb_poly):
+            return False
+    if ward_geom is not None and not sh.intersects(ward_geom):
+        return False
+    return True
+
+
+
+def sample_unique(values, limit: int = 8) -> List[str]:
+    """Return up to `limit` unique non-empty string values preserving order."""
+    out: List[str] = []
+    seen: Set[str] = set()
+    for raw in values:
+        text = str(raw).strip()
+        if not text or text.lower() == "nan":
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
 
 
 # ----------------------------
@@ -406,18 +456,7 @@ def build_road_graph(
 
         # The road-section-geometry dataset doesn't include full_road_name.
         # Use a best-effort label for segment/run counting & tooltips.
-        rsid = str(row.get("road_section_id", "")).strip()
-        rtype = str(row.get("road_type", "")).strip()
-        gcls = str(row.get("geometry_class", "")).strip()
-        rid = str(row.get("road_section_geometry_id", "")).strip()
-        parts = [p for p in [rtype, gcls] if p and p.lower() != "nan"]
-        base = " / ".join(parts) if parts else "road"
-        if rsid and rsid.lower() != "nan":
-            road_name = f"{base} (section {rsid})"
-        elif rid and rid.lower() != "nan":
-            road_name = f"{base} (geom {rid})"
-        else:
-            road_name = base
+        road_name = road_label_from_row(row)
 
         try:
             sh = wkt.loads(geom)
@@ -436,7 +475,7 @@ def build_road_graph(
             if len(coords) < 2:
                 continue
 
-            if bbox and not any(bbox.contains_lonlat(x, y) for (x, y) in coords):
+            if bbox is not None and not ls.intersects(box(bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat)):
                 continue
             if ward_geom is not None and not ward_geom.intersects(ls):
                 continue
@@ -523,7 +562,7 @@ def load_track_lines_geojson(
             coords = list(ls.coords)
             if len(coords) < 2:
                 continue
-            if bbox and not any(bbox.contains_lonlat(x, y) for (x, y) in coords):
+            if bbox is not None and not ls.intersects(box(bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat)):
                 continue
             if ward_geom is not None and not ward_geom.intersects(ls):
                 continue
@@ -2451,6 +2490,11 @@ def main() -> None:
     if len(addr) == 0:
         raise SystemExit("No addresses left after filtering. Adjust --town/--ta/--bbox/--ward.")
 
+    address_samples = sample_unique(addr["full_address"].tolist(), limit=8)
+    print(f"Addresses in scope: {len(addr):,}")
+    if address_samples:
+        print("  Sample addresses: " + " | ".join(address_samples))
+
     # --- load roads + build graph ---
 
     # --- load roads + build graph ---
@@ -2490,6 +2534,15 @@ def main() -> None:
     # Ensure WKT present
     roads = roads.dropna(subset=["WKT"]).copy()
 
+    roads = roads[roads["WKT"].map(lambda geom: road_row_in_scope(str(geom), effective_bbox, ward_geom))].copy()
+    if len(roads) == 0:
+        raise SystemExit("No roads left after filtering. Adjust --bbox/--ward.")
+
+    road_samples = sample_unique((road_label_from_row(r) for _, r in roads.head(200).iterrows()), limit=8)
+    print(f"Road geometries in scope: {len(roads):,}")
+    if road_samples:
+        print("  Sample roads: " + " | ".join(road_samples))
+
     g, nodes_arr = build_road_graph(
         roads,
         bbox=effective_bbox,
@@ -2506,6 +2559,11 @@ def main() -> None:
         bbox=effective_bbox,
         ward_geom=ward_geom,
     )
+    track_samples = sample_unique((name for _, name in track_lines), limit=8)
+    print(f"Track geometries in scope: {len(track_lines):,}")
+    if track_samples:
+        print("  Sample tracks: " + " | ".join(track_samples))
+
     if track_lines:
         track_nodes = add_lines_to_graph(
             g,
@@ -2728,18 +2786,7 @@ def main() -> None:
         if not isinstance(geom, str) or not geom:
             continue
 
-        rsid = str(row.get("road_section_id", "")).strip()
-        rtype = str(row.get("road_type", "")).strip()
-        gcls = str(row.get("geometry_class", "")).strip()
-        rid = str(row.get("road_section_geometry_id", "")).strip()
-        parts = [p for p in [rtype, gcls] if p and p.lower() != "nan"]
-        base = " / ".join(parts) if parts else "road"
-        if rsid and rsid.lower() != "nan":
-            road_name = f"{base} (section {rsid})"
-        elif rid and rid.lower() != "nan":
-            road_name = f"{base} (geom {rid})"
-        else:
-            road_name = base
+        road_name = road_label_from_row(row)
 
         try:
             sh = wkt.loads(geom)
@@ -2758,7 +2805,7 @@ def main() -> None:
             coords = list(ls.coords)
             if len(coords) < 2:
                 continue
-            if effective_bbox and not any(effective_bbox.contains_lonlat(x, y) for (x, y) in coords):
+            if effective_bbox is not None and not ls.intersects(box(effective_bbox.min_lon, effective_bbox.min_lat, effective_bbox.max_lon, effective_bbox.max_lat)):
                 continue
             if ward_geom is not None and not ward_geom.intersects(ls):
                 continue
@@ -2805,7 +2852,7 @@ def main() -> None:
         coords = list(ls.coords)
         if len(coords) < 2:
             continue
-        if effective_bbox and not any(effective_bbox.contains_lonlat(x, y) for (x, y) in coords):
+        if effective_bbox is not None and not ls.intersects(box(effective_bbox.min_lon, effective_bbox.min_lat, effective_bbox.max_lon, effective_bbox.max_lat)):
             continue
         if ward_geom is not None and not ward_geom.intersects(ls):
             continue
