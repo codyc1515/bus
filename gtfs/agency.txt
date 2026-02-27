@@ -1,0 +1,2 @@
+﻿agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email
+Metro Canterbury,Metro Canterbury,https://www.metroinfo.co.nz/,Pacific/Auckland,en,+ 64 3 366 88 55,https://www.metroinfo.co.nz/metrocard/,metro@ecan.govt.nz

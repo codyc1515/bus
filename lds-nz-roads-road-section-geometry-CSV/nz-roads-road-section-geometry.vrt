@@ -1,0 +1,30 @@
+<OGRVRTDataSource>
+  <OGRVRTLayer name="nz-roads-road-section-geometry">
+    <SrcDataSource relativeToVRT="1">nz-roads-road-section-geometry.csv</SrcDataSource>
+    <FeatureCount>23226</FeatureCount>
+    <GeometryField encoding="WKT" field="WKT" reportSrcColumn="FALSE">
+      <GeometryType>wkbMultiLineString</GeometryType>
+      <SRS>EPSG:4326</SRS>
+      <ExtentXMin>172.423981648397</ExtentXMin>
+      <ExtentYMin>-43.8868263667</ExtentYMin>
+      <ExtentXMax>173.1298212</ExtentXMax>
+      <ExtentYMax>-43.3907722880873</ExtentYMax>
+    </GeometryField>
+    <FID>road_section_geometry_id</FID>
+    <Field name="road_section_geometry_id" src="road_section_geometry_id" type="Integer" />
+    <Field name="geometry_class" src="geometry_class" type="String" width="40" />
+    <Field name="road_type" src="road_type" type="String" width="40" />
+    <Field name="road_section_id" src="road_section_id" type="Integer" />
+    <Field name="geometry_provider" src="geometry_provider" type="String" width="100" />
+    <Field name="geometry_manager" src="geometry_manager" type="String" width="100" />
+    <Field name="geometry_capture_method" src="geometry_capture_method" type="String" width="40" />
+    <Field name="left_suburb_locality" src="left_suburb_locality" type="String" width="80" />
+    <Field name="right_suburb_locality" src="right_suburb_locality" type="String" width="80" />
+    <Field name="left_town_city" src="left_town_city" type="String" width="80" />
+    <Field name="right_town_city" src="right_town_city" type="String" width="80" />
+    <Field name="left_territorial_authority" src="left_territorial_authority" type="String" width="80" />
+    <Field name="right_territorial_authority" src="right_territorial_authority" type="String" width="80" />
+    <Field name="begin_lifespan" src="begin_lifespan" type="Date" />
+    <Field name="end_lifespan" src="end_lifespan" type="Date" />
+  </OGRVRTLayer>
+</OGRVRTDataSource>

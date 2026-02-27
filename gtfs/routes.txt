@@ -1,0 +1,59 @@
+﻿route_id,agency_id,route_short_name,route_long_name,route_desc,route_type,route_url,route_color,route_text_color
+100_0432_7_3,Metro Canterbury,100,Wigram/The Palms,,3,,88807E,3B3C1D
+100_0432_8_3,Metro Canterbury,100,Wigram/The Palms,,3,,88807E,3B3C1D
+107_8882_1_3,Metro Canterbury,107,Styx Mill/Northlands,,3,,46A299,3B3C1D
+107_8882_2_3,Metro Canterbury,107,Styx Mill/Northlands,,3,,46A299,3B3C1D
+120_6279_5_3,Metro Canterbury,120,Burnside/Spreydon,,3,,FAA61A,3B3C1D
+120_6279_6_3,Metro Canterbury,120,Burnside/Spreydon,,3,,FAA61A,3B3C1D
+125_6143_5_3,Metro Canterbury,125,Redwood/Westlake,,3,,5F9937,3B3C1D
+125_6143_6_3,Metro Canterbury,125,Redwood/Westlake,,3,,5F9937,3B3C1D
+130_9280_5_3,Metro Canterbury,130,Hei Hei/Avonhead,,3,,9F3925,3B3C1D
+130_9280_6_3,Metro Canterbury,130,Hei Hei/Avonhead,,3,,9F3925,3B3C1D
+135_5805_7_3,Metro Canterbury,135,The Palms/New Brighton,,3,,0DB14B,3B3C1D
+135_5805_8_3,Metro Canterbury,135,The Palms/New Brighton,,3,,0DB14B,3B3C1D
+140_2178_1_3,Metro Canterbury,140,Russley/Mt Pleasant,,3,,00929E,3B3C1D
+140_2178_2_3,Metro Canterbury,140,Russley/Mt Pleasant,,3,,00929E,3B3C1D
+155_9188_5_3,Metro Canterbury,155,Eastgate/Lyttelton,,3,,9D6DA9,3B3C1D
+155_9188_6_3,Metro Canterbury,155,Eastgate/Lyttelton,,3,,9D6DA9,3B3C1D
+1_0854_5_3,Metro Canterbury,1,Rangiora/Cashmere,,3,,3EBCED,3B3C1D
+1_0854_6_3,Metro Canterbury,1,Rangiora/Cashmere,,3,,3EBCED,3B3C1D
+27_4175_5_3,Metro Canterbury,27,Northwood/Huntsbury,,3,,F5834E,4A0D1D
+27_4175_6_3,Metro Canterbury,27,Northwood/Huntsbury,,3,,F5834E,4A0D1D
+29_1687_1_3,Metro Canterbury,29,Airport/City via Fendalton,,3,,00539F,3B3C1D
+29_1687_2_3,Metro Canterbury,29,Airport/City via Fendalton,,3,,00539F,3B3C1D
+3_9076_7_3,Metro Canterbury,3,Airport/Sumner,,3,,554588,3B3C1D
+3_9076_8_3,Metro Canterbury,3,Airport/Sumner,,3,,554588,3B3C1D
+44_6733_5_3,Metro Canterbury,44,Shirley/Westmorland,,3,,0074AD,3B3C1D
+44_6733_6_3,Metro Canterbury,44,Shirley/Westmorland,,3,,0074AD,3B3C1D
+5_9122_7_3,Metro Canterbury,5,Rolleston/New Brighton,,3,,FFC20E,3B3C1D
+5_9122_8_3,Metro Canterbury,5,Rolleston/New Brighton,,3,,FFC20E,3B3C1D
+60_0264_7_3,Metro Canterbury,60,Hillmorton/Southshore,,3,,DA6FAB,3B3C1D
+60_0264_8_3,Metro Canterbury,60,Hillmorton/Southshore,,3,,DA6FAB,3B3C1D
+7_3740_5_3,Metro Canterbury,7,Halswell/Queenspark,,3,,F37021,3B3C1D
+7_3740_6_3,Metro Canterbury,7,Halswell/Queenspark,,3,,F37021,3B3C1D
+80_3229_7_3,Metro Canterbury,80,Lincoln/Parklands,,3,,717DBD,3B3C1D
+80_3229_8_3,Metro Canterbury,80,Lincoln/Parklands,,3,,717DBD,3B3C1D
+81_5272_7_3,Metro Canterbury,81,Lincoln/City direct,,3,,F05B7C,3B3C1D
+81_5272_8_3,Metro Canterbury,81,Lincoln/City direct,,3,,F05B7C,3B3C1D
+820_2945_5_3,Metro Canterbury,820,Burnham/Lincoln via Rolleston,,3,,46BA7C,3B3C1D
+820_2945_6_3,Metro Canterbury,820,Burnham/Lincoln via Rolleston,,3,,46BA7C,3B3C1D
+84_2916_1_3,Metro Canterbury,84,Rolleston/City direct,,3,,C6001A,022120
+84_2916_2_3,Metro Canterbury,84,Rolleston/City direct,,3,,C6001A,022120
+85_2916_1_3,Metro Canterbury,85,Rolleston/City direct,,3,,5D95DF,022120
+85_2916_2_3,Metro Canterbury,85,Rolleston/City direct,,3,,5D95DF,022120
+86_9018_1_3,Metro Canterbury,86,Darfield/City,,3,,CBDB2A,425223
+86_9018_2_3,Metro Canterbury,86,Darfield/City,,3,,CBDB2A,3B3C1D
+8_8657_5_3,Metro Canterbury,8,Airport/Lyttelton,,3,,EC008C,263909
+8_8657_6_3,Metro Canterbury,8,Airport/Lyttelton,,3,,EC008C,263909
+91_4187_5_3,Metro Canterbury,91,Rangiora/City direct,,3,,008644,3B3C1D
+91_4187_6_3,Metro Canterbury,91,Rangiora/City direct,,3,,008644,3B3C1D
+92_6525_5_3,Metro Canterbury,92,Kaiapoi/City direct,,3,,946338,3B3C1D
+92_6525_6_3,Metro Canterbury,92,Kaiapoi/City direct,,3,,946338,3B3C1D
+95_7946_1_3,Metro Canterbury,95,City/Pegasus and Waikuku,,3,,C41039,3B3C1D
+95_7946_2_3,Metro Canterbury,95,City/Pegasus and Waikuku,,3,,C41039,3B3C1D
+97_1161_7_3,Metro Canterbury,97,Rangiora/Pegasus,,3,,906FA1,3B3C1D
+97_1161_8_3,Metro Canterbury,97,Rangiora/Pegasus,,3,,906FA1,3B3C1D
+F_0589_1_3,Metro Canterbury,F,Diamond Harbour Ferry,,3,,005899,3B3C1D
+F_0589_2_3,Metro Canterbury,F,Diamond Harbour Ferry,,3,,005899,3B3C1D
+Oa_3402_4_3,Metro Canterbury,Oa,Orbiter,,3,,79BC43,FFFFFF
+Oc_3402_3_3,Metro Canterbury,Oc,Orbiter,,3,,79BC43,3B3C1D
