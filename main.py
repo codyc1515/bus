@@ -893,32 +893,57 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   }
 
   function recalcAddressesFromStops(reason, logKey, methodOverride) {
-    // Road-only policy:
-    // Interactive client-side recalculation cannot reproduce the server-side
-    // road/track shortest-path methodology, so we do not recompute distances
-    // here (except for explicitly allowed methods).
-    if (methodOverride && String(methodOverride).startsWith('interactive')) {
-      const summaryReason = reason || 'bus stop moved';
-      const summaryKey = (logKey === undefined) ? 'stop:unknown' : logKey;
-      updateSummary(`${summaryReason} (road-only mode: rerun build to recalculate)`, summaryKey);
-      return;
-    }
-
     if (!window.__stopData || !window.__addrData) return;
 
-    const grid = buildStopGrid(window.__stopData);
+    function stopAllowedByFilter(s) {
+      if (!window.__activeRouteFilter || window.__activeRouteFilter.size === 0) return true;
+      const routeIds = Array.isArray(s.routeIds) ? s.routeIds : [];
+      for (const rid of routeIds) {
+        if (window.__activeRouteFilter.has(String(rid))) return true;
+      }
+      return false;
+    }
 
     for (const a of window.__addrData) {
-      const res = nearestStop(grid, a.lat, a.lon, 12, window.__activeRouteFilter);
-      a.distM = res.distM;
-      a.nearestStopName = (res.stop && res.stop.name) ? res.stop.name : 'N/A';
-      if (methodOverride !== undefined && methodOverride !== null) {
-        a.methodology = methodOverride;
+      let bestStop = null;
+      let bestDist = Infinity;
+      let bestMethod = null;
+
+      for (const s of window.__stopData) {
+        if (!stopAllowedByFilter(s)) continue;
+
+        const sid = (s && s.id != null) ? String(s.id) : '';
+        const pre = (a.stopMetrics && sid && !s.__moved) ? a.stopMetrics[sid] : null;
+
+        let d = null;
+        let method = null;
+
+        if (pre && pre.distM != null && isFinite(pre.distM)) {
+          d = pre.distM;
+          method = pre.methodology || 'roads';
+        } else {
+          d = haversineM(a.lat, a.lon, s.lat, s.lon);
+          method = 'interactive straight-line';
+        }
+
+        if (d != null && isFinite(d) && d < bestDist) {
+          bestDist = d;
+          bestStop = s;
+          bestMethod = method;
+        }
       }
 
-      // Update highlight route to point at the NEW nearest stop position.
-      if (window.__routeStore && a.id && res.stop) {
-        window.__routeStore[a.id] = [[a.lat, a.lon], [res.stop.lat, res.stop.lon]];
+      a.distM = isFinite(bestDist) ? bestDist : null;
+      a.nearestStopName = (bestStop && bestStop.name) ? bestStop.name : 'N/A';
+      if (methodOverride !== undefined && methodOverride !== null) {
+        a.methodology = methodOverride;
+      } else {
+        a.methodology = bestMethod || 'N/A';
+      }
+
+      // Update highlight route to point at the nearest stop position.
+      if (window.__routeStore && a.id && bestStop) {
+        window.__routeStore[a.id] = [[a.lat, a.lon], [bestStop.lat, bestStop.lon]];
       }
     }
 
@@ -1078,8 +1103,9 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         const ll = ev.target.getLatLng();
         s.lat = ll.lat;
         s.lon = ll.lng;
+        s.__moved = true;
         const label = (s.name || s.id || sid);
-        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive (road-only; deferred recalculation)');
+        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive straight-line');
       });
 
       // Right click to remove
@@ -1098,7 +1124,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         delete window.__stopMarkers[sid];
 
         // Update distances + stats/log
-        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive (road-only; deferred recalculation)');
+        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive straight-line');
       });
 
       window.__stopMarkers[sid] = mk;
@@ -1110,11 +1136,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     // Expose helper so route-click can add stops later
     window.__addStop = function(lat, lon, name) {
-      const s = { id: '', lat: lat, lon: lon, name: name || 'New stop', routeIds: Array.from(window.__activeRouteFilter || []) };
+      const s = { id: '', lat: lat, lon: lon, name: name || 'New stop', routeIds: Array.from(window.__activeRouteFilter || []), __moved: true };
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
-      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive (road-only; deferred recalculation)');
+      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive straight-line');
     };
   }
 
@@ -1404,6 +1430,23 @@ def main() -> None:
     nodes_arr = np.array([[n[0], n[1]] for n in g.nodes()], dtype=np.float64)
     node_kd = cKDTree(nodes_arr) if len(nodes_arr) else None
 
+    # Precompute stop snap metadata for road/track shortest-path comparisons.
+    stop_node_meta: Dict[str, dict] = {}
+    if node_kd is not None and len(nodes_arr) and len(g.nodes) > 0:
+        for _, s in stops.iterrows():
+            sid = str(s.get("stop_id", "")).strip()
+            if not sid or sid.lower() == "nan":
+                continue
+            slat = float(s["stop_lat"])
+            slon = float(s["stop_lon"])
+            stop_node, _ = snap_to_graph_node(node_kd, nodes_arr, slon, slat)
+            x_st, y_st = tf_to_m.transform(slat, slon)
+            x_en, y_en = tf_to_m.transform(stop_node[1], stop_node[0])
+            stop_node_meta[sid] = {
+                "node": stop_node,
+                "snap_m": float(math.hypot(x_st - x_en, y_st - y_en)),
+            }
+
     # --- choose map centre ---
     centre_lat = float(addr["lat"].mean())
     centre_lon = float(addr["lon"].mean())
@@ -1645,67 +1688,94 @@ def main() -> None:
         route_coords: Optional[List[Tuple[float, float]]] = None
         dist_for_colour_m: Optional[float] = None
 
-        if stop_kd is not None and len(stop_latlons):
-            _, idx = stop_kd.query([lat, lon], k=1)
-            idx = int(idx)
-            stop_lat = float(stop_latlons[idx, 0])
-            stop_lon = float(stop_latlons[idx, 1])
-
-            srow = stops.iloc[idx]
-            stop_name = str(srow.get("stop_name", "")).strip()
-            stop_code = str(srow.get("stop_code", "")).strip()
-            nearest_stop_txt = f"{stop_code} — {stop_name}" if stop_code and stop_code != "nan" else stop_name
-
-            direct_m = haversine_m(lat, lon, stop_lat, stop_lon)
-            dist_for_colour_m = direct_m
-
-            network_m: Optional[float] = None
-            road_segs: Optional[int] = None
-            node_path: Optional[List[Tuple[float, float]]] = None
-            used_track = False
+        stop_metrics: Dict[str, dict] = {}
+        if len(stops):
+            start_node = None
+            snap_a_m = 0.0
+            lengths = None
+            paths = None
 
             if node_kd is not None and len(nodes_arr) and len(g.nodes) > 0:
                 start_node, _ = snap_to_graph_node(node_kd, nodes_arr, lon, lat)
-                end_node, _ = snap_to_graph_node(node_kd, nodes_arr, stop_lon, stop_lat)
+                x_a, y_a = tf_to_m.transform(lat, lon)
+                x_sn, y_sn = tf_to_m.transform(start_node[1], start_node[0])
+                snap_a_m = float(math.hypot(x_a - x_sn, y_a - y_sn))
+                lengths = nx.single_source_dijkstra_path_length(g, start_node, weight="weight")
+                paths = nx.single_source_dijkstra_path(g, start_node, weight="weight")
 
-                core_m, node_path, road_segs, used_track = shortest_path_details(g, start_node, end_node)
+            best_distance: Optional[float] = None
+            best_route_coords: Optional[List[Tuple[float, float]]] = None
+            best_method = "N/A"
+            best_roadseg = "N/A"
+            best_stop_txt = "No stops loaded"
 
-                if core_m is not None and node_path is not None:
-                    x_a, y_a = tf_to_m.transform(lat, lon)
-                    x_sn, y_sn = tf_to_m.transform(start_node[1], start_node[0])
-                    x_st, y_st = tf_to_m.transform(stop_lat, stop_lon)
-                    x_en, y_en = tf_to_m.transform(end_node[1], end_node[0])
-                    snapA = math.hypot(x_a - x_sn, y_a - y_sn)
-                    snapS = math.hypot(x_st - x_en, y_st - y_en)
+            for _, srow in stops.iterrows():
+                stop_lat = float(srow["stop_lat"])
+                stop_lon = float(srow["stop_lon"])
+                stop_name = str(srow.get("stop_name", "")).strip()
+                stop_code = str(srow.get("stop_code", "")).strip()
+                stop_id = str(srow.get("stop_id", "")).strip()
+                stop_txt = f"{stop_code} — {stop_name}" if stop_code and stop_code != "nan" else stop_name
 
-                    network_m = float(core_m + snapA + snapS)
+                direct_m = haversine_m(lat, lon, stop_lat, stop_lon)
+                cand_m = direct_m
+                cand_method = "straight-line"
+                cand_roadseg = "—"
+                cand_route: List[Tuple[float, float]] = [(lat, lon), (stop_lat, stop_lon)]
 
-                    network_m = max(network_m, direct_m, 0.0)
+                if (
+                    start_node is not None
+                    and lengths is not None
+                    and paths is not None
+                    and stop_id in stop_node_meta
+                ):
+                    end_node = stop_node_meta[stop_id]["node"]
+                    if end_node in lengths and end_node in paths:
+                        core_m = float(lengths[end_node])
+                        node_path = paths[end_node]
+                        snap_s_m = float(stop_node_meta[stop_id]["snap_m"])
+                        network_m = max(core_m + snap_a_m + snap_s_m, direct_m, 0.0)
 
-                    coords2: List[Tuple[float, float]] = [(lat, lon)]
-                    coords2 += [(n[1], n[0]) for n in node_path]
-                    coords2 += [(stop_lat, stop_lon)]
+                        uses_track = False
+                        for u, v in zip(node_path[:-1], node_path[1:]):
+                            data = g.get_edge_data(u, v) or {}
+                            if str(data.get("kind", "road")) == "track":
+                                uses_track = True
+                                break
 
-                    cleaned: List[Tuple[float, float]] = []
-                    last = None
-                    for p in coords2:
-                        if last is None or p != last:
-                            cleaned.append(p)
-                        last = p
-                    if len(cleaned) >= 2:
-                        route_coords = cleaned
+                        coords2: List[Tuple[float, float]] = [(lat, lon)]
+                        coords2 += [(n[1], n[0]) for n in node_path]
+                        coords2 += [(stop_lat, stop_lon)]
+                        cleaned: List[Tuple[float, float]] = []
+                        last = None
+                        for p in coords2:
+                            if last is None or p != last:
+                                cleaned.append(p)
+                            last = p
+                        if len(cleaned) >= 2:
+                            cand_route = cleaned
 
-            if network_m is None:
-                network_m = direct_m
-                method_txt = "straight-line"
-                roadseg_txt = "—"
-                route_coords = [(lat, lon), (stop_lat, stop_lon)]
-            else:
-                method_txt = "roads + tracks" if used_track else "roads"
-                roadseg_txt = str(road_segs) if road_segs is not None else "?"
+                        cand_m = network_m
+                        cand_method = "roads + tracks" if uses_track else "roads"
+                        cand_roadseg = str(max(0, len(node_path) - 1))
 
-            dist_txt = f"{network_m:,.0f} m"
-            dist_for_colour_m = network_m
+                if stop_id and stop_id.lower() != "nan":
+                    stop_metrics[stop_id] = {"distM": float(cand_m), "methodology": cand_method}
+
+                if best_distance is None or cand_m < best_distance:
+                    best_distance = float(cand_m)
+                    best_route_coords = cand_route
+                    best_method = cand_method
+                    best_roadseg = cand_roadseg
+                    best_stop_txt = stop_txt
+
+            if best_distance is not None:
+                nearest_stop_txt = best_stop_txt
+                dist_for_colour_m = best_distance
+                dist_txt = f"{best_distance:,.0f} m"
+                method_txt = best_method
+                roadseg_txt = best_roadseg
+                route_coords = best_route_coords
 
         # Register route in JS store (only for this address)
         if route_coords is not None and addr_id:
@@ -1766,6 +1836,7 @@ def main() -> None:
                 "nearestStopName": nearest_stop_txt,
                 "distM": float(dist_for_colour_m) if dist_for_colour_m is not None else None,
                 "methodology": method_txt,
+                "stopMetrics": stop_metrics,
             }
         )
 
