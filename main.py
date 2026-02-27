@@ -12,7 +12,8 @@ Click an address marker:
 - Highlights the route taken on the map.
 
 NEW:
-- Roads are drawn thicker and coloured green→red by distance to nearest stop.
+- Roads are drawn thicker and coloured green→yellow by distance to nearest stop.
+- Distances above the active bound are coloured red to flag unacceptable values.
 - Address markers are coloured the same way.
 - UI slider lets you change the colour-scale max from 400→800m (live recolour).
 - Bus stops are draggable: on drag-end, nearest-stop distances are recalculated
@@ -78,16 +79,17 @@ def natural_route_sort_key(label: str) -> Tuple[int, int, str]:
 
 
 def dist_to_green_red_hex(dist_m: Optional[float], max_m: float = 400.0) -> str:
-    """Map distance to hex color from green (0) to red (max_m).
+    """Map distance to hex colour from green (0) to yellow (max_m).
 
-    If dist_m is None, treat as max.
-    Values > max are clamped.
+    Distances beyond max_m are shown as red.
     """
     if dist_m is None or not math.isfinite(dist_m):
-        dist_m = max_m
+        return "#ff0000"
+    if dist_m > max_m:
+        return "#ff0000"
     t = clamp(dist_m / max_m, 0.0, 1.0)
     r = int(round(255 * t))
-    g = int(round(255 * (1.0 - t)))
+    g = 255
     b = 0
     return f"#{r:02x}{g:02x}{b:02x}"
 
@@ -628,10 +630,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
   function distToColorHex(distM, maxM) {
-    if (distM == null || !isFinite(distM)) distM = maxM;
+    if (distM == null || !isFinite(distM)) return '#ff0000';
+    if (distM > maxM) return '#ff0000';
     const t = clamp(distM / maxM, 0.0, 1.0);
     const r = Math.round(255 * t);
-    const g = Math.round(255 * (1.0 - t));
+    const g = 255;
     const b = 0;
     const hex = (n) => n.toString(16).padStart(2, '0');
     return `#${hex(r)}${hex(g)}${hex(b)}`;
@@ -1637,10 +1640,14 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     wrap.innerHTML = `
       <div style="font-weight:700; margin-bottom:6px;">Nearest stop distance</div>
-      <div style="width:220px; height:12px; border-radius:8px; background: linear-gradient(90deg, #00ff00 0%, #ff0000 100%);"></div>
+      <div style="width:220px; height:12px; border-radius:8px; background: linear-gradient(90deg, #00ff00 0%, #ffff00 100%);"></div>
       <div style="display:flex; justify-content: space-between; margin-top: 4px; color:#333;">
         <span>0 m</span>
         <span id="__gradMaxLabel">400 m</span>
+      </div>
+      <div style="margin-top:4px; color:#333; display:flex; align-items:center; gap:6px;">
+        <span style="display:inline-block; width:10px; height:10px; border-radius:2px; background:#ff0000;"></span>
+        <span>&gt; max is red (not acceptable)</span>
       </div>
       <div style="margin-top:8px;">
         <input id="__gradMaxSlider" type="range" min="400" max="800" step="10" value="400" style="width:220px;" />
