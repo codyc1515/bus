@@ -26,13 +26,12 @@ Dependencies:
 Usage example:
   python3 main.py \
     --addresses lds-nz-addresses-CSV/nz-addresses.csv \
-    --roads lds-nz-roads-addressing-CSV/nz-roads-addressing.csv \
+    --roads lds-nz-roads-road-section-geometry-CSV/nz-roads-road-section-geometry.csv \
     --gtfs gtfs \
-    --bbox 172.536417 -43.561454 172.555088 -43.542949 \
     --out map.html
 
 Notes:
-- Plotting all NZ addresses in one HTML is not practical. Use --bbox/--town/--ta and/or --max-addresses.
+- Plotting all NZ addresses in one HTML is not practical. Use --bbox/--ward/--town/--ta and/or --max-addresses.
 - Road network is derived from addressing roads; it may detour where footpaths/accessways exist.
 """
 
@@ -50,7 +49,7 @@ import pandas as pd
 import folium
 import networkx as nx
 from shapely import wkt
-from shapely.geometry import LineString, shape
+from shapely.geometry import LineString, Point, shape
 from pyproj import Transformer
 from scipy.spatial import cKDTree
 from folium import Element
@@ -112,6 +111,25 @@ def parse_bbox(vals: Optional[List[float]]) -> Optional[BBox]:
     if min_lat > max_lat:
         raise ValueError("bbox invalid: min_lat > max_lat (remember: in NZ, more negative is south)")
     return BBox(min_lon, min_lat, max_lon, max_lat)
+
+
+def load_ward_geometry(ward_geojson: str, ward_name: str):
+    """Load a ward geometry from Ward_(OpenData).geojson by WardNameDescription."""
+    with open(ward_geojson, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    features = data.get("features", [])
+    ward_name_lc = ward_name.strip().lower()
+    for feat in features:
+        props = feat.get("properties", {}) or {}
+        name = str(props.get("WardNameDescription", "")).strip()
+        if name.lower() == ward_name_lc:
+            geom = feat.get("geometry")
+            if not geom:
+                raise ValueError(f"Ward {ward_name!r} has no geometry in {ward_geojson}")
+            return shape(geom)
+
+    raise ValueError(f"Ward {ward_name!r} not found in {ward_geojson}")
 
 
 # ----------------------------
@@ -225,6 +243,7 @@ def densify_linestring(ls: LineString, max_segment_m: float, tf_to_m: Transforme
 def build_road_graph(
     roads_df: pd.DataFrame,
     bbox: Optional[BBox],
+    ward_geom,
     max_roads: int,
     densify_m: float,
 ) -> Tuple[nx.Graph, np.ndarray]:
@@ -285,6 +304,8 @@ def build_road_graph(
                 continue
 
             if bbox and not any(bbox.contains_lonlat(x, y) for (x, y) in coords):
+                continue
+            if ward_geom is not None and not ward_geom.intersects(ls):
                 continue
 
             dense = densify_linestring(ls, max_segment_m=densify_m, tf_to_m=tf_to_m)
@@ -1044,21 +1065,23 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--addresses", required=True, help="Path to lds-nz-addresses-CSV/nz-addresses.csv")
+    ap.add_argument("--addresses", default="lds-nz-addresses-CSV/nz-addresses.csv", help="Path to lds-nz-addresses-CSV/nz-addresses.csv")
     ap.add_argument(
         "--roads",
-        required=True,
+        default="lds-nz-roads-road-section-geometry-CSV/nz-roads-road-section-geometry.csv",
         help=(
             "Path to lds-nz-roads-road-section-geometry-CSV CSV (expects WKT, road_section_id, road_type, geometry_class, end_lifespan). "
             "Rows with end_lifespan are excluded (no longer exist)."
         ),
     )
-    ap.add_argument("--gtfs", required=True, help="Path to GTFS folder (contains routes.txt, stops.txt, shapes.txt, trips.txt, ...)")
+    ap.add_argument("--gtfs", default="gtfs", help="Path to GTFS folder (contains routes.txt, stops.txt, shapes.txt, trips.txt, ...)")
     ap.add_argument("--out", default="map.html", help="Output HTML filename")
 
     ap.add_argument("--town", default=None, help="Filter addresses by town_city (e.g. 'Christchurch')")
     ap.add_argument("--ta", default=None, help="Filter addresses by territorial_authority (e.g. 'Christchurch City')")
     ap.add_argument("--bbox", nargs=4, type=float, default=None, help="min_lon min_lat max_lon max_lat")
+    ap.add_argument("--ward", default=None, help="Filter by ward name from Ward_(OpenData).geojson (e.g. 'Hornby')")
+    ap.add_argument("--ward-geojson", default="Ward_(OpenData).geojson", help="Path to Ward_(OpenData).geojson")
     ap.add_argument(
         "--routes",
         default=None,
@@ -1080,6 +1103,14 @@ def main() -> None:
 
     args = ap.parse_args()
     bbox = parse_bbox(args.bbox)
+    ward_geom = None
+    ward_bbox = None
+    if args.ward:
+        ward_geom = load_ward_geometry(args.ward_geojson, args.ward)
+        minx, miny, maxx, maxy = ward_geom.bounds
+        ward_bbox = BBox(minx, miny, maxx, maxy)
+
+    effective_bbox = bbox if bbox is not None else ward_bbox
 
     # --- load GTFS ---
     routes, stops, shapes, trips = load_gtfs(args.gtfs)
@@ -1124,12 +1155,16 @@ def main() -> None:
         else:
             stops = stops.iloc[0:0].copy()
 
-    if bbox:
+    if effective_bbox:
         stops = stops[
-            (stops["stop_lon"] >= bbox.min_lon)
-            & (stops["stop_lon"] <= bbox.max_lon)
-            & (stops["stop_lat"] >= bbox.min_lat)
-            & (stops["stop_lat"] <= bbox.max_lat)
+            (stops["stop_lon"] >= effective_bbox.min_lon)
+            & (stops["stop_lon"] <= effective_bbox.max_lon)
+            & (stops["stop_lat"] >= effective_bbox.min_lat)
+            & (stops["stop_lat"] <= effective_bbox.max_lat)
+        ]
+    if ward_geom is not None:
+        stops = stops[
+            stops.apply(lambda r: ward_geom.contains(Point(float(r["stop_lon"]), float(r["stop_lat"]))), axis=1)
         ]
 
     if len(stops) > args.max_stops:
@@ -1171,19 +1206,21 @@ def main() -> None:
 
     addr = addr.dropna(subset=["lon", "lat"])
 
-    if bbox:
+    if effective_bbox:
         addr = addr[
-            (addr["lon"] >= bbox.min_lon)
-            & (addr["lon"] <= bbox.max_lon)
-            & (addr["lat"] >= bbox.min_lat)
-            & (addr["lat"] <= bbox.max_lat)
+            (addr["lon"] >= effective_bbox.min_lon)
+            & (addr["lon"] <= effective_bbox.max_lon)
+            & (addr["lat"] >= effective_bbox.min_lat)
+            & (addr["lat"] <= effective_bbox.max_lat)
         ]
+    if ward_geom is not None:
+        addr = addr[addr.apply(lambda r: ward_geom.contains(Point(float(r["lon"]), float(r["lat"]))), axis=1)]
 
     if len(addr) > args.max_addresses:
         addr = addr.iloc[: args.max_addresses].copy()
 
     if len(addr) == 0:
-        raise SystemExit("No addresses left after filtering. Adjust --town/--ta/--bbox.")
+        raise SystemExit("No addresses left after filtering. Adjust --town/--ta/--bbox/--ward.")
 
     # --- load roads + build graph ---
 
@@ -1226,7 +1263,8 @@ def main() -> None:
 
     g, nodes_arr = build_road_graph(
         roads,
-        bbox=bbox,
+        bbox=effective_bbox,
+        ward_geom=ward_geom,
         max_roads=args.max_roads,
         densify_m=args.densify_m,
     )
@@ -1423,7 +1461,9 @@ def main() -> None:
             coords = list(ls.coords)
             if len(coords) < 2:
                 continue
-            if bbox and not any(bbox.contains_lonlat(x, y) for (x, y) in coords):
+            if effective_bbox and not any(effective_bbox.contains_lonlat(x, y) for (x, y) in coords):
+                continue
+            if ward_geom is not None and not ward_geom.intersects(ls):
                 continue
 
             d_m = linestring_min_stop_distance_m(
@@ -1627,6 +1667,8 @@ def main() -> None:
     )
     if bbox:
         print(f"BBox: {bbox}")
+    if args.ward:
+        print(f"Ward: {args.ward}")
 
 
 if __name__ == "__main__":
