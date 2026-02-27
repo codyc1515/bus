@@ -227,9 +227,10 @@ def build_route_segment_distance_labels(
     stops: pd.DataFrame,
     stop_times: Optional[pd.DataFrame],
 ) -> Dict[str, List[dict]]:
-    """Build label points showing distance from each stop to the next stop per route.
+    """Build clickable points showing distance from each stop to the next stop per route.
 
-    Returns route_id -> list of label records with keys: lat, lon, text.
+    Returns route_id -> list of records with keys:
+      lat, lon, prev_stop_name, next_stop_name, distance_m.
     Uses one representative trip per route (most stops) to avoid excessive overlap.
     """
     if stop_times is None or stop_times.empty:
@@ -258,9 +259,14 @@ def build_route_segment_distance_labels(
     stop_coords["stop_id"] = stop_coords["stop_id"].astype(str)
     stop_coords["stop_lat"] = pd.to_numeric(stop_coords["stop_lat"], errors="coerce")
     stop_coords["stop_lon"] = pd.to_numeric(stop_coords["stop_lon"], errors="coerce")
+    if "stop_name" in stop_coords.columns:
+        stop_coords["stop_name"] = stop_coords["stop_name"].fillna("").astype(str)
+    else:
+        stop_coords["stop_name"] = ""
     stop_coords = stop_coords.dropna(subset=["stop_lat", "stop_lon"]).drop_duplicates(subset=["stop_id"])
-    stop_coord_map: Dict[str, Tuple[float, float]] = {
-        str(r["stop_id"]): (float(r["stop_lat"]), float(r["stop_lon"])) for _, r in stop_coords.iterrows()
+    stop_coord_name_map: Dict[str, Tuple[float, float, str]] = {
+        str(r["stop_id"]): (float(r["stop_lat"]), float(r["stop_lon"]), str(r["stop_name"]).strip())
+        for _, r in stop_coords.iterrows()
     }
 
     out: Dict[str, List[dict]] = {}
@@ -278,16 +284,18 @@ def build_route_segment_distance_labels(
         for a, b in zip(stop_ids[:-1], stop_ids[1:]):
             if a == b:
                 continue
-            if a not in stop_coord_map or b not in stop_coord_map:
+            if a not in stop_coord_name_map or b not in stop_coord_name_map:
                 continue
-            lat_a, lon_a = stop_coord_map[a]
-            lat_b, lon_b = stop_coord_map[b]
+            lat_a, lon_a, name_a = stop_coord_name_map[a]
+            lat_b, lon_b, name_b = stop_coord_name_map[b]
             dist_m = haversine_m(lat_a, lon_a, lat_b, lon_b)
             labels.append(
                 {
                     "lat": (lat_a + lat_b) / 2.0,
                     "lon": (lon_a + lon_b) / 2.0,
-                    "text": f"{dist_m:,.0f} m",
+                    "prev_stop_name": name_a or a,
+                    "next_stop_name": name_b or b,
+                    "distance_m": float(dist_m),
                 }
             )
 
@@ -1796,7 +1804,7 @@ def main() -> None:
 
     # --- layer: route shapes ---
     fg_routes = folium.FeatureGroup(name="Bus routes", show=True)
-    fg_route_dist_labels = folium.FeatureGroup(name="Route segment distances", show=True)
+    fg_route_dist_labels = folium.FeatureGroup(name="Route segment distances (click)", show=True)
     route_shape_refs: List[str] = []
     route_shape_meta: List[dict] = []
     routes_idx = routes.set_index("route_id", drop=False) if "route_id" in routes.columns else None
@@ -1859,20 +1867,27 @@ def main() -> None:
             route_shape_meta.append({"refName": ref_name, "routeId": str(route_id)})
 
         for seg in route_segment_labels.get(str(route_id), []):
-            seg_text = str(seg.get("text", "")).strip()
-            if not seg_text:
+            prev_name = str(seg.get("prev_stop_name", "")).strip() or "Unknown stop"
+            next_name = str(seg.get("next_stop_name", "")).strip() or "Unknown stop"
+            distance_m = seg.get("distance_m")
+            if distance_m is None:
                 continue
-            folium.Marker(
+            popup_html = (
+                "<div style='font-size:12px;'>"
+                f"<div><b>Previous stop:</b> {prev_name}</div>"
+                f"<div><b>Next stop:</b> {next_name}</div>"
+                f"<div><b>Distance:</b> {float(distance_m):,.0f} m</div>"
+                "</div>"
+            )
+            folium.CircleMarker(
                 location=[float(seg["lat"]), float(seg["lon"])],
-                icon=folium.DivIcon(
-                    icon_size=(80, 14),
-                    icon_anchor=(40, 7),
-                    html=(
-                        "<div style=\"font-size:10px;font-weight:700;color:#111;"
-                        "text-shadow:0 0 2px #fff, 0 0 3px #fff;white-space:nowrap;\">"
-                        f"{seg_text}</div>"
-                    ),
-                ),
+                radius=4,
+                weight=1,
+                color="#1f4e79",
+                fill=True,
+                fill_opacity=0.85,
+                tooltip="Click for stop-to-stop distance",
+                popup=folium.Popup(popup_html, max_width=320),
             ).add_to(fg_route_dist_labels)
 
     fg_routes.add_to(m)
