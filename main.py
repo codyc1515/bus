@@ -44,7 +44,7 @@ import argparse
 import math
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import json
 
 import numpy as np
@@ -384,6 +384,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 (function() {
   // ---------- UI state ----------
   window.__gradMaxM = 400;
+  window.__activeRouteFilter = new Set();
 
   // ---------- helpers ----------
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -431,7 +432,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return grid;
   }
 
-  function nearestStop(stopsGrid, lat, lon, maxRing) {
+  function nearestStop(stopsGrid, lat, lon, maxRing, activeRouteFilter) {
     // Expand rings of cells until we find at least one candidate, then
     // keep expanding a bit to be safe.
     const ci = Math.floor(lat / CELL);
@@ -442,6 +443,14 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     function consider(list) {
       for (const s of list) {
+        if (activeRouteFilter && activeRouteFilter.size > 0) {
+          const routeIds = Array.isArray(s.routeIds) ? s.routeIds : [];
+          let matches = false;
+          for (const rid of routeIds) {
+            if (activeRouteFilter.has(String(rid))) { matches = true; break; }
+          }
+          if (!matches) continue;
+        }
         const d = haversineM(lat, lon, s.lat, s.lon);
         if (d < bestD) { bestD = d; best = s; }
       }
@@ -474,7 +483,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   }
 
   // ---------- global registries populated by Python ----------
-  // window.__stopData = [{id, lat, lon, name}]
+  // window.__stopData = [{id, lat, lon, name, routeIds}]
+  // window.__routeOptions = [{id, label}]
   // window.__addrData = [{id, lat, lon, markerName, basePopupHtml, markerRefName, distM}]
   // window.__roadData = [{polyRefName, dM}]
 
@@ -516,6 +526,21 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   }
 
   // ---------- serviceability stats ----------
+  function countFilteredStops() {
+    if (!window.__stopData || !Array.isArray(window.__stopData)) return 0;
+    if (!window.__activeRouteFilter || window.__activeRouteFilter.size === 0) return window.__stopData.length;
+    let n = 0;
+    for (const s of window.__stopData) {
+      const routeIds = Array.isArray(s.routeIds) ? s.routeIds : [];
+      let matches = false;
+      for (const rid of routeIds) {
+        if (window.__activeRouteFilter.has(String(rid))) { matches = true; break; }
+      }
+      if (matches) n++;
+    }
+    return n;
+  }
+
   function computeServedCounts(thresholdM) {
     const total = (window.__addrData && window.__addrData.length) ? window.__addrData.length : 0;
     let served = 0;
@@ -525,7 +550,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       }
     }
     const unserved = total - served;
-    const stops = (window.__stopData && window.__stopData.length) ? window.__stopData.length : 0;
+    const stops = countFilteredStops();
     return { total, served, unserved, stops, thresholdM };
   }
 
@@ -551,13 +576,29 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     panel.innerHTML = `
       <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+        <div style="font-weight:700;">Starting metrics</div>
+        <div style="color:#555; opacity:0.9;">≤ <span id="__svcStartThreshold">—</span> m</div>
+      </div>
+      <div style="margin-top:8px; display:grid; grid-template-columns: 1fr auto; gap:6px 10px;">
+        <div>Bus stops in area</div><div id="__svcStartStops" style="font-weight:700; text-align:right;">—</div>
+        <div>Addresses served</div><div id="__svcStartServed" style="font-weight:700; text-align:right;">—</div>
+        <div>Addresses not served</div><div id="__svcStartUnserved" style="font-weight:700; text-align:right;">—</div>
+      </div>
+      <div style="margin-top:10px; font-weight:700;">Change log</div>
+      <div id="__svcLog" style="margin-top:6px; max-height:260px; overflow:auto; padding-right:4px;"></div>
+      <div style="margin-top:10px; font-weight:700;">Totals after changes</div>
+      <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-top:6px;">
         <div style="font-weight:700;">Serviceable area</div>
-        <div style="color:#555; opacity:0.9;">≤ <span id="__svcThreshold">${Math.round(window.__gradMaxM)}</span> m</div>
+        <div style="color:#555; opacity:0.9;">≤ <span id="__svcThreshold">—</span> m</div>
       </div>
       <div style="margin-top:8px; display:grid; grid-template-columns: 1fr auto; gap:6px 10px;">
         <div>Bus stops in area</div><div id="__svcStops" style="font-weight:700; text-align:right;">—</div>
         <div>Addresses served</div><div id="__svcServed" style="font-weight:700; text-align:right;">—</div>
         <div>Addresses not served</div><div id="__svcUnserved" style="font-weight:700; text-align:right;">—</div>
+      </div>
+      <div style="margin-top:8px;">
+        <div style="font-weight:600; margin-bottom:4px;">Routes to include (multi-select)</div>
+        <select id="__routeFilter" multiple size="6" style="width:100%; font-size:12px;"></select>
       </div>
       <div style="margin-top:10px; font-weight:700;">Change log</div>
       <div id="__svcLog" style="margin-top:6px; max-height:260px; overflow:auto; padding-right:4px;"></div>
@@ -621,8 +662,26 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     if (un) un.textContent = nextStats.unserved.toLocaleString();
   }
 
+  function renderStartingStats(startStats) {
+    ensureStatsPanel();
+    const th = document.getElementById('__svcStartThreshold');
+    const st = document.getElementById('__svcStartStops');
+    const se = document.getElementById('__svcStartServed');
+    const un = document.getElementById('__svcStartUnserved');
+
+    if (th) th.textContent = `${Math.round(startStats.thresholdM)}`;
+    if (st) st.textContent = startStats.stops.toLocaleString();
+    if (se) se.textContent = startStats.served.toLocaleString();
+    if (un) un.textContent = startStats.unserved.toLocaleString();
+  }
+
   function updateSummary(reason, logKey) {
     const nextStats = computeServedCounts(window.__gradMaxM);
+
+    if (!window.__startingSvcStats) {
+      window.__startingSvcStats = nextStats;
+      renderStartingStats(nextStats);
+    }
 
     // For per-item log lines (e.g., a specific bus stop), compute deltas against
     // the last time THAT item was updated, not whatever the most recent action was.
@@ -668,7 +727,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     const grid = buildStopGrid(window.__stopData);
 
     for (const a of window.__addrData) {
-      const res = nearestStop(grid, a.lat, a.lon, 12);
+      const res = nearestStop(grid, a.lat, a.lon, 12, window.__activeRouteFilter);
       a.distM = res.distM;
       a.nearestStopName = (res.stop && res.stop.name) ? res.stop.name : 'N/A';
 
@@ -682,6 +741,30 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     recolorAll(window.__gradMaxM);
     updateAddressPopupsInteractive();
     updateSummary(reason || 'bus stop moved', logKey || 'stop:unknown');
+  }
+
+  function populateRouteFilterOptions() {
+    const sel = document.getElementById('__routeFilter');
+    if (!sel) return;
+    sel.innerHTML = '';
+    const opts = Array.isArray(window.__routeOptions) ? window.__routeOptions : [];
+    for (const r of opts) {
+      const opt = document.createElement('option');
+      opt.value = String(r.id);
+      opt.textContent = `${r.label} (${r.id})`;
+      sel.appendChild(opt);
+    }
+  }
+
+  function installRouteFilter() {
+    const sel = document.getElementById('__routeFilter');
+    if (!sel) return;
+    populateRouteFilterOptions();
+    sel.addEventListener('change', function() {
+      const picked = Array.from(sel.selectedOptions).map(o => String(o.value));
+      window.__activeRouteFilter = new Set(picked);
+      recalcAddressesFromStops(`route filter changed (${picked.length} selected)`, 'route-filter');
+    });
   }
 
   function installSlider(map) {
@@ -789,7 +872,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
         // Update distances + stats/log
         recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`);
-        updateSummary(`stop removed: ${label}`, `stop:${sid}`);
       });
 
       window.__stopMarkers[sid] = mk;
@@ -801,12 +883,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     // Expose helper so route-click can add stops later
     window.__addStop = function(lat, lon, name) {
-      const s = { id: '', lat: lat, lon: lon, name: name || 'New stop' };
+      const s = { id: '', lat: lat, lon: lon, name: name || 'New stop', routeIds: Array.from(window.__activeRouteFilter || []) };
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
       recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`);
-      updateSummary(`stop added: ${s.name}`, `stop:${sid}`);
     };
   }
 
@@ -844,6 +925,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
       installSlider(map);
       ensureStatsPanel();
+      installRouteFilter();
       // initial recolour
       recolorAll(window.__gradMaxM);
       // initial stats (no log entry)
@@ -882,6 +964,11 @@ def main() -> None:
     ap.add_argument("--town", default=None, help="Filter addresses by town_city (e.g. 'Christchurch')")
     ap.add_argument("--ta", default=None, help="Filter addresses by territorial_authority (e.g. 'Christchurch City')")
     ap.add_argument("--bbox", nargs=4, type=float, default=None, help="min_lon min_lat max_lon max_lat")
+    ap.add_argument(
+        "--routes",
+        default=None,
+        help="Optional route filter by route_id/route_short_name (comma-separated, e.g. 100,101).",
+    )
 
     ap.add_argument("--max-addresses", type=int, default=20000, help="Max addresses to load/plot after filtering")
     ap.add_argument("--max-roads", type=int, default=200000, help="Max road rows to consider (after bbox filter)")
@@ -902,13 +989,46 @@ def main() -> None:
 
     # --- load GTFS ---
     routes, stops, shapes, trips = load_gtfs(args.gtfs)
+
+    selected_route_ids: Optional[Set[str]] = None
+    if args.routes:
+        requested = {x.strip() for x in str(args.routes).split(",") if x.strip()}
+        if requested:
+            rid_col = routes["route_id"].astype(str) if "route_id" in routes.columns else pd.Series(dtype=str)
+            rshort_col = routes["route_short_name"].astype(str) if "route_short_name" in routes.columns else pd.Series(dtype=str)
+            mask = rid_col.isin(requested) | rshort_col.isin(requested)
+            selected_route_ids = set(routes.loc[mask, "route_id"].astype(str).tolist())
+            if not selected_route_ids:
+                raise SystemExit(f"No GTFS routes matched --routes={args.routes!r}.")
+            routes = routes[routes["route_id"].astype(str).isin(selected_route_ids)].copy()
+            trips = trips[trips["route_id"].astype(str).isin(selected_route_ids)].copy()
+
     shapes_by_route = build_shapes_by_route(routes, shapes, trips)
+
+    # stop_id -> set(route_id), via stop_times + trips
+    stop_route_ids: Dict[str, Set[str]] = {}
+    stop_times_path = os.path.join(args.gtfs, "stop_times.txt")
+    if os.path.exists(stop_times_path) and {"trip_id", "route_id"}.issubset(trips.columns):
+        stop_times = pd.read_csv(stop_times_path, usecols=["trip_id", "stop_id"], dtype=str)
+        trip_routes = trips[["trip_id", "route_id"]].dropna().astype(str)
+        stop_trip_routes = stop_times.merge(trip_routes, on="trip_id", how="inner")
+        for sid, grp in stop_trip_routes.groupby("stop_id"):
+            stop_route_ids[str(sid)] = {
+                str(x) for x in grp["route_id"].astype(str).tolist() if str(x).strip() and str(x).lower() != "nan"
+            }
 
     # --- load + filter stops ---
     stops = stops.copy()
     stops["stop_lat"] = pd.to_numeric(stops["stop_lat"], errors="coerce")
     stops["stop_lon"] = pd.to_numeric(stops["stop_lon"], errors="coerce")
     stops = stops.dropna(subset=["stop_lat", "stop_lon"])
+
+    if selected_route_ids is not None:
+        stop_ids_for_selected = {sid for sid, rids in stop_route_ids.items() if rids & selected_route_ids}
+        if stop_ids_for_selected:
+            stops = stops[stops["stop_id"].astype(str).isin(stop_ids_for_selected)].copy()
+        else:
+            stops = stops.iloc[0:0].copy()
 
     if bbox:
         stops = stops[
@@ -1072,6 +1192,20 @@ def main() -> None:
     route_shape_refs: List[str] = []
     routes_idx = routes.set_index("route_id", drop=False) if "route_id" in routes.columns else None
 
+    available_route_ids_in_bounds: Set[str] = set()
+    for sid in stops.get("stop_id", pd.Series(dtype=str)).astype(str).tolist():
+        available_route_ids_in_bounds.update(stop_route_ids.get(str(sid), set()))
+    route_options_js: List[dict] = []
+    if routes_idx is not None:
+        for rid in sorted(available_route_ids_in_bounds):
+            if rid not in routes_idx.index:
+                continue
+            rr = routes_idx.loc[rid]
+            short_name = str(rr.get("route_short_name", "")).strip()
+            long_name = str(rr.get("route_long_name", "")).strip()
+            label = short_name or long_name or f"route {rid}"
+            route_options_js.append({"id": str(rid), "label": label})
+
     for route_id, polylines in shapes_by_route.items():
         if routes_idx is not None and route_id in routes_idx.index:
             r = routes_idx.loc[route_id]
@@ -1129,17 +1263,20 @@ def main() -> None:
             popup=folium.Popup(title, max_width=300),
         ).add_to(fg_stops)
 
+        sid = str(s.get("stop_id", ""))
         stop_js_data.append({
-            "id": str(s.get("stop_id", "")),
+            "id": sid,
             "lat": lat_s,
             "lon": lon_s,
             "name": title,
+            "routeIds": sorted(list(stop_route_ids.get(sid, set()))),
         })
 
     fg_stops.add_to(m)
 
     # Expose stops to JS for draggable overlay
     m.get_root().html.add_child(Element(f"<script>window.__stopData = {json.dumps(stop_js_data)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeOptions = {json.dumps(route_options_js)};</script>"))
 
     # --- layer: roads (visual + coloured by nearest stop distance) ---
     fg_roads = folium.FeatureGroup(name="Roads (distance to stop)", show=False)
