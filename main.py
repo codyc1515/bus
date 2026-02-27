@@ -869,6 +869,96 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
   }
 
+  function runDijkstraFromSources(sourceSnaps) {
+    const rt = ensureGraphRuntime();
+    if (!rt) return null;
+    const n = rt.nodes.length;
+    const dist = new Array(n).fill(Infinity);
+    const heap = [];
+
+    function push(item) {
+      heap.push(item);
+      let i = heap.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heap[p][0] <= heap[i][0]) break;
+        [heap[p], heap[i]] = [heap[i], heap[p]];
+        i = p;
+      }
+    }
+    function pop() {
+      if (!heap.length) return null;
+      const out = heap[0];
+      const last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        let i = 0;
+        while (true) {
+          const l = i * 2 + 1;
+          const r = l + 1;
+          let m = i;
+          if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+          if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+          if (m === i) break;
+          [heap[m], heap[i]] = [heap[i], heap[m]];
+          i = m;
+        }
+      }
+      return out;
+    }
+
+    for (const snap of (Array.isArray(sourceSnaps) ? sourceSnaps : [])) {
+      if (!snap) continue;
+      const idx = snap.idx;
+      const snapM = snap.snapM;
+      if (idx == null || !isFinite(snapM)) continue;
+      if (idx < 0 || idx >= n) continue;
+      if (snapM < dist[idx]) {
+        dist[idx] = snapM;
+        push([snapM, idx]);
+      }
+    }
+
+    while (heap.length) {
+      const item = pop();
+      if (!item) break;
+      const d = item[0];
+      const u = item[1];
+      if (d !== dist[u]) continue;
+      for (const [v, w] of rt.adj[u]) {
+        const nd = d + w;
+        if (nd < dist[v]) {
+          dist[v] = nd;
+          push([nd, v]);
+        }
+      }
+    }
+
+    return { dist };
+  }
+
+  function recalcLineDistancesFromStop(lineData, sf) {
+    if (!lineData || !sf || !Array.isArray(sf.dist)) return;
+    for (const line of lineData) {
+      const pts = Array.isArray(line.samples) ? line.samples : [];
+      if (!pts.length) {
+        line.dM = null;
+        continue;
+      }
+      let best = Infinity;
+      for (const pt of pts) {
+        if (!Array.isArray(pt) || pt.length < 2) continue;
+        const snap = nearestGraphNode(pt[0], pt[1]);
+        if (snap.idx == null || snap.snapM == null) continue;
+        const graphD = sf.dist[snap.idx];
+        if (!isFinite(graphD)) continue;
+        const d = snap.snapM + graphD;
+        if (d < best) best = d;
+      }
+      line.dM = isFinite(best) ? best : null;
+    }
+  }
+
   function recolorAll(maxM) {
     // Addresses
     if (window.__addrData) {
@@ -900,26 +990,50 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     // Roads (we store per-poly distance as dM)
     if (window.__roadData) {
+      const stopHighlightActive = !!(window.__activeStopHighlight || window.__hoverStopHighlight);
       for (const r of window.__roadData) {
         const poly = getByName(r.polyRefName);
         if (!poly) continue;
         const c = distToColorHex(r.dM, maxM);
+        const inRange = (r.dM != null && isFinite(r.dM) && r.dM <= maxM);
         if (poly.setStyle) {
-          const nextOpacity = window.__showChangesOnly ? 0.0 : 0.75;
-          poly.setStyle({ color: c, opacity: nextOpacity });
+          const nextOpacity = window.__showChangesOnly
+            ? 0.0
+            : (stopHighlightActive ? (inRange ? 0.95 : 0.12) : 0.75);
+          const nextWeight = stopHighlightActive
+            ? (inRange ? 4.5 : 2.0)
+            : undefined;
+          const nextColor = stopHighlightActive
+            ? (inRange ? '#1565c0' : '#9e9e9e')
+            : c;
+          const style = { color: nextColor, opacity: nextOpacity };
+          if (nextWeight !== undefined) style.weight = nextWeight;
+          poly.setStyle(style);
         }
       }
     }
 
     // Tracks
     if (window.__trackData) {
+      const stopHighlightActive = !!(window.__activeStopHighlight || window.__hoverStopHighlight);
       for (const t of window.__trackData) {
         const poly = getByName(t.polyRefName);
         if (!poly) continue;
         const c = distToColorHex(t.dM, maxM);
+        const inRange = (t.dM != null && isFinite(t.dM) && t.dM <= maxM);
         if (poly.setStyle) {
-          const nextOpacity = window.__showChangesOnly ? 0.0 : 0.8;
-          poly.setStyle({ color: c, opacity: nextOpacity });
+          const nextOpacity = window.__showChangesOnly
+            ? 0.0
+            : (stopHighlightActive ? (inRange ? 0.98 : 0.10) : 0.8);
+          const nextWeight = stopHighlightActive
+            ? (inRange ? 4.0 : 1.8)
+            : undefined;
+          const nextColor = stopHighlightActive
+            ? (inRange ? '#00897b' : '#9e9e9e')
+            : c;
+          const style = { color: nextColor, opacity: nextOpacity };
+          if (nextWeight !== undefined) style.weight = nextWeight;
+          poly.setStyle(style);
         }
       }
     }
@@ -1458,6 +1572,51 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       return s.__genId;
     }
 
+    function clearStopRoadTrackHighlight() {
+      window.__activeStopHighlight = null;
+      window.__hoverStopHighlight = null;
+      recalcLineDistancesFromStops(window.__roadData);
+      recalcLineDistancesFromStops(window.__trackData);
+      recolorAll(window.__gradMaxM);
+    }
+
+    function applyStopRoadTrackHighlight(s, sid, isPersistent) {
+      const snap = nearestGraphNode(s.lat, s.lon);
+      if (snap.idx == null || snap.snapM == null) {
+        clearStopRoadTrackHighlight();
+        return;
+      }
+
+      const sf = runDijkstraFromSources([{ idx: snap.idx, snapM: snap.snapM }]);
+      if (!sf) {
+        clearStopRoadTrackHighlight();
+        return;
+      }
+
+      recalcLineDistancesFromStop(window.__roadData, sf);
+      recalcLineDistancesFromStop(window.__trackData, sf);
+      recolorAll(window.__gradMaxM);
+
+      if (isPersistent) {
+        window.__activeStopHighlight = sid;
+        window.__hoverStopHighlight = null;
+      } else {
+        window.__hoverStopHighlight = sid;
+      }
+    }
+
+    function refreshStopRoadTrackHighlight() {
+      const activeSid = window.__activeStopHighlight;
+      if (activeSid && window.__stopMarkers[activeSid]) {
+        const stop = window.__stopMarkers[activeSid].__stopRef;
+        if (stop) {
+          applyStopRoadTrackHighlight(stop, activeSid, true);
+          return;
+        }
+      }
+      clearStopRoadTrackHighlight();
+    }
+
     function addStopMarkerFor(s) {
       const sid = ensureStopId(s);
       // Avoid duplicating
@@ -1467,20 +1626,28 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const stopName = String(s.stopName || s.name || '').trim() || 'Unknown stop';
       const stopCode = String(s.stopCode || '').trim();
       const stopTitle = stopCode ? `${stopCode} — ${stopName}` : stopName;
-      const details = Array.isArray(s.distanceDetails) ? s.distanceDetails : [];
-      const detailItems = details.slice(0, 8).map(function(d) {
-        const dir = String(d && d.direction || '');
-        const other = String(d && d.other_stop_name || '').trim() || 'Unknown stop';
-        const dist = Number(d && d.distance_m || 0);
-        const prefix = dir === 'to_next' ? 'To next' : 'From previous';
-        return `<li>${prefix} <b>${other}</b>: ${Math.round(dist).toLocaleString()} m</li>`;
-      }).join('');
-      const detailHtml = detailItems
-        ? `<div style="margin-top:6px;"><b>Adjacent stop distances</b><ul style="margin:4px 0 0 16px; padding:0;">${detailItems}</ul></div>`
-        : '<div style="margin-top:6px; opacity:0.8;">No adjacent stop distance data.</div>';
-
       const mk = L.marker([s.lat, s.lon], { pane: "stopsPane", draggable: true, icon: dot, title: stopTitle || sid }).addTo(map);
-      mk.bindPopup(`<div style="font-size:12px;"><b>Stop:</b> ${stopTitle}${detailHtml}</div>`);
+      mk.__stopRef = s;
+
+      mk.on('mouseover', function() {
+        if (window.__activeStopHighlight) return;
+        applyStopRoadTrackHighlight(s, sid, false);
+      });
+
+      mk.on('mouseout', function() {
+        if (window.__activeStopHighlight) return;
+        if (window.__hoverStopHighlight === sid) {
+          clearStopRoadTrackHighlight();
+        }
+      });
+
+      mk.on('click', function() {
+        if (window.__activeStopHighlight === sid) {
+          clearStopRoadTrackHighlight();
+          return;
+        }
+        applyStopRoadTrackHighlight(s, sid, true);
+      });
 
       mk.on('dragend', function(ev) {
         const ll = ev.target.getLatLng();
@@ -1489,8 +1656,16 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         snapStopToRouteLine(s);
         ev.target.setLatLng([s.lat, s.lon]);
         s.__moved = true;
+        if (window.__activeStopHighlight === sid) {
+          applyStopRoadTrackHighlight(s, sid, true);
+        } else if (!window.__activeStopHighlight && window.__hoverStopHighlight === sid) {
+          applyStopRoadTrackHighlight(s, sid, false);
+        }
         const label = (s.name || s.id || sid);
         recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'roads + tracks');
+        if (window.__activeStopHighlight === sid) {
+          refreshStopRoadTrackHighlight();
+        }
       });
 
       // Right click to remove
@@ -1507,6 +1682,10 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
         // Remove marker registry
         delete window.__stopMarkers[sid];
+
+        if (window.__activeStopHighlight === sid || window.__hoverStopHighlight === sid) {
+          clearStopRoadTrackHighlight();
+        }
 
         // Update distances + stats/log
         recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'roads + tracks');
@@ -1528,6 +1707,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       window.__stopData.push(s);
       addStopMarkerFor(s);
       recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'roads + tracks');
+      refreshStopRoadTrackHighlight();
     };
   }
 
