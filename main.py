@@ -854,17 +854,21 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         const currentServed = (a.distM != null && isFinite(a.distM) && a.distM <= maxM);
         let c = distToColorHex(a.distM, maxM);
 
+        let style = { color: c, fillColor: c, opacity: 1.0, fillOpacity: 0.95 };
         if (window.__showChangesOnly) {
-          c = '#9e9e9e';
-          if (!baseServed && currentServed) {
-            c = '#2e7d32'; // gained service
-          } else if (baseServed && !currentServed) {
-            c = '#c62828'; // lost service
+          const changed = (!baseServed && currentServed) || (baseServed && !currentServed);
+          if (!changed) {
+            // Hide unchanged markers entirely so changed ones stand out.
+            style = { color: c, fillColor: c, opacity: 0.0, fillOpacity: 0.0 };
+          } else if (!baseServed && currentServed) {
+            style = { color: '#2e7d32', fillColor: '#2e7d32', opacity: 1.0, fillOpacity: 0.95 };
+          } else {
+            style = { color: '#c62828', fillColor: '#c62828', opacity: 1.0, fillOpacity: 0.95 };
           }
         }
 
         if (marker.setStyle) {
-          marker.setStyle({ color: c, fillColor: c });
+          marker.setStyle(style);
         }
       }
     }
