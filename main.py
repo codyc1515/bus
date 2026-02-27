@@ -74,6 +74,22 @@ def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def natural_route_sort_key(label: str) -> Tuple[int, int, str]:
+    """Sort labels by leading route number when present, then text."""
+    s = (label or "").strip()
+    digits = []
+    for ch in s:
+        if ch.isdigit():
+            digits.append(ch)
+        elif digits:
+            break
+        elif not ch.isspace():
+            break
+    if digits:
+        return (0, int("".join(digits)), s.lower())
+    return (1, 0, s.lower())
+
+
 def dist_to_green_red_hex(dist_m: Optional[float], max_m: float = 400.0) -> str:
     """Map distance to hex color from green (0) to red (max_m).
 
@@ -910,10 +926,16 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     const opts = Array.isArray(window.__routeOptions) ? window.__routeOptions : [];
     for (const r of opts) {
       const opt = document.createElement('option');
-      opt.value = String(r.id);
-      opt.textContent = `${r.label} (${r.id})`;
+      opt.value = String(r.value);
+      opt.textContent = `${r.label}`;
       sel.appendChild(opt);
     }
+  }
+
+  function setStartingStatsToCurrent() {
+    const nextStats = computeServedCounts(window.__gradMaxM);
+    window.__startingSvcStats = nextStats;
+    renderStartingStats(nextStats);
   }
 
   function installRouteFilter() {
@@ -922,8 +944,15 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     populateRouteFilterOptions();
     sel.addEventListener('change', function() {
       const picked = Array.from(sel.selectedOptions).map(o => String(o.value));
-      window.__activeRouteFilter = new Set(picked);
-      recalcAddressesFromStops(`route filter changed (${picked.length} selected)`, 'route-filter', null);
+      const idSet = new Set();
+      const valueToIds = window.__routeValueToIds || {};
+      for (const v of picked) {
+        const ids = Array.isArray(valueToIds[v]) ? valueToIds[v] : [];
+        for (const rid of ids) idSet.add(String(rid));
+      }
+      window.__activeRouteFilter = idSet;
+      recalcAddressesFromStops(null, null, null);
+      setStartingStatsToCurrent();
     });
   }
 
@@ -1390,8 +1419,10 @@ def main() -> None:
     for sid in stops.get("stop_id", pd.Series(dtype=str)).astype(str).tolist():
         available_route_ids_in_bounds.update(stop_route_ids.get(str(sid), set()))
     route_options_js: List[dict] = []
+    route_value_to_ids_js: Dict[str, List[str]] = {}
     if routes_idx is not None:
-        for rid in sorted(available_route_ids_in_bounds):
+        grouped_route_ids_by_label: Dict[str, Set[str]] = {}
+        for rid in available_route_ids_in_bounds:
             if rid not in routes_idx.index:
                 continue
             rr = routes_idx.loc[rid]
@@ -1401,7 +1432,13 @@ def main() -> None:
                 label = f"{short_name} {long_name}"
             else:
                 label = short_name or long_name or f"route {rid}"
-            route_options_js.append({"id": str(rid), "label": label})
+            grouped_route_ids_by_label.setdefault(label, set()).add(str(rid))
+
+        for label in sorted(grouped_route_ids_by_label.keys(), key=natural_route_sort_key):
+            route_ids_for_label = sorted(grouped_route_ids_by_label[label])
+            route_value = route_ids_for_label[0]
+            route_options_js.append({"value": route_value, "label": label})
+            route_value_to_ids_js[route_value] = route_ids_for_label
 
     for route_id, polylines in shapes_by_route.items():
         if routes_idx is not None and route_id in routes_idx.index:
@@ -1474,6 +1511,7 @@ def main() -> None:
     # Expose stops to JS for draggable overlay
     m.get_root().html.add_child(Element(f"<script>window.__stopData = {json.dumps(stop_js_data)};</script>"))
     m.get_root().html.add_child(Element(f"<script>window.__routeOptions = {json.dumps(route_options_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeValueToIds = {json.dumps(route_value_to_ids_js)};</script>"))
 
     # --- layer: roads (visual + coloured by nearest stop distance) ---
     fg_roads = folium.FeatureGroup(name="Roads (distance to stop)", show=False)
