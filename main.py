@@ -468,7 +468,11 @@ def build_road_graph(
     return g, nodes
 
 
-def load_track_lines_geojson(path: str, bbox: Optional[BBox]) -> List[Tuple[LineString, str]]:
+def load_track_lines_geojson(
+    path: str,
+    bbox: Optional[BBox],
+    ward_geom=None,
+) -> List[Tuple[LineString, str]]:
     """Load track geometries from GeoJSON and return routable linework.
 
     For polygonal tracks, we use the polygon boundary to approximate walkable
@@ -521,6 +525,8 @@ def load_track_lines_geojson(path: str, bbox: Optional[BBox]) -> List[Tuple[Line
                 continue
             if bbox and not any(bbox.contains_lonlat(x, y) for (x, y) in coords):
                 continue
+            if ward_geom is not None and not ward_geom.intersects(ls):
+                continue
             out.append((ls, name))
 
     return out
@@ -570,6 +576,7 @@ def connect_track_nodes_to_graph(
     base_nodes: np.ndarray,
     tf_to_m: Transformer,
     max_link_m: float = 20.0,
+    max_track_neighbours: int = 2,
 ) -> None:
     """Stitch track nodes to nearest existing graph nodes when very close.
 
@@ -613,19 +620,25 @@ def connect_track_nodes_to_graph(
 
     for i, (lon, lat) in enumerate(track_list):
         n1 = (lon, lat)
-        neighbours = track_kd.query_ball_point(track_xy[i], r=max_link_m)
-        for j in neighbours:
+        k = max(1, int(max_track_neighbours)) + 1  # +1 includes self
+        dists, idxs = track_kd.query(track_xy[i], k=min(k, len(track_list)))
+
+        if np.isscalar(dists):
+            dists = [float(dists)]
+            idxs = [int(idxs)]
+
+        for dist_m, j in zip(dists, idxs):
+            j = int(j)
             if j == i:
                 continue
-            n2 = track_list[int(j)]
+            if not math.isfinite(float(dist_m)) or float(dist_m) <= 0.0 or float(dist_m) > max_link_m:
+                continue
+
+            n2 = track_list[j]
             if n1 == n2 or g.has_edge(n1, n2):
                 continue
-            dx = float(track_xy[int(j), 0] - track_xy[i, 0])
-            dy = float(track_xy[int(j), 1] - track_xy[i, 1])
-            w = float(math.hypot(dx, dy))
-            if w <= 0.0 or w > max_link_m:
-                continue
-            g.add_edge(n1, n2, weight=w, road="track connector", kind="track")
+
+            g.add_edge(n1, n2, weight=float(dist_m), road="track connector", kind="track")
 
 
 def snap_to_graph_node(kdtree: cKDTree, nodes_arr: np.ndarray, lon: float, lat: float) -> Tuple[Tuple[float, float], float]:
@@ -2246,6 +2259,18 @@ def main() -> None:
     ap.add_argument("--draw-simplify-m", type=float, default=0.0, help="Simplify rendered road/track geometry by this tolerance (metres); 0 disables")
     ap.add_argument("--graph-precision", type=int, default=6, help="Decimal places for graph coordinates/weights in embedded JSON")
     ap.add_argument("--tracks-geojson", default="Track_(OpenData).geojson", help="Optional GeoJSON file of walkable tracks to include in routing graph")
+    ap.add_argument(
+        "--track-link-max-m",
+        type=float,
+        default=20.0,
+        help="Max distance (m) for connector edges that stitch track nodes to roads/nearby tracks",
+    )
+    ap.add_argument(
+        "--track-link-neighbours",
+        type=int,
+        default=2,
+        help="Max nearby track neighbours to connect per track node (limits graph blow-up)",
+    )
 
     args = ap.parse_args()
 
@@ -2281,6 +2306,8 @@ def main() -> None:
                 "--draw-simplify-m", str(args.draw_simplify_m),
                 "--graph-precision", str(args.graph_precision),
                 "--tracks-geojson", args.tracks_geojson,
+                "--track-link-max-m", str(args.track_link_max_m),
+                "--track-link-neighbours", str(args.track_link_neighbours),
             ]
             if args.town:
                 cmd.extend(["--town", args.town])
@@ -2471,7 +2498,11 @@ def main() -> None:
     # For snap-distance to metres + densify sampling
     tf_to_m = Transformer.from_crs("EPSG:4326", "EPSG:2193", always_xy=False)
 
-    track_lines = load_track_lines_geojson(args.tracks_geojson, bbox=effective_bbox)
+    track_lines = load_track_lines_geojson(
+        args.tracks_geojson,
+        bbox=effective_bbox,
+        ward_geom=ward_geom,
+    )
     if track_lines:
         track_nodes = add_lines_to_graph(
             g,
@@ -2485,7 +2516,8 @@ def main() -> None:
             track_nodes=track_nodes,
             base_nodes=nodes_arr,
             tf_to_m=tf_to_m,
-            max_link_m=20.0,
+            max_link_m=float(args.track_link_max_m),
+            max_track_neighbours=int(args.track_link_neighbours),
         )
 
     nodes_arr = np.array([[n[0], n[1]] for n in g.nodes()], dtype=np.float64)
