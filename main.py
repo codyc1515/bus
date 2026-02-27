@@ -92,6 +92,17 @@ def dist_to_green_red_hex(dist_m: Optional[float], max_m: float = 400.0) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in metres for two WGS84 coordinates."""
+    r = 6371000.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2.0) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2.0) ** 2
+    return 2.0 * r * math.asin(math.sqrt(a))
+
+
 @dataclass(frozen=True)
 class BBox:
     min_lon: float
@@ -1598,6 +1609,12 @@ def main() -> None:
 
     if len(stops) > args.max_stops:
         stops = stops.iloc[: args.max_stops].copy()
+
+    route_segment_labels = build_route_segment_distance_labels(
+        trips=trips,
+        stops=stops,
+        stop_times=stop_times,
+    )
 
     # --- load + filter addresses ---
     usecols = {
