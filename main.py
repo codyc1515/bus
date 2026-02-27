@@ -39,6 +39,9 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 import json
@@ -150,6 +153,33 @@ def load_ward_geometry(ward_geojson: str, ward_name: str):
             return shape(geom)
 
     raise ValueError(f"Ward {ward_name!r} not found in {ward_geojson}")
+
+
+def load_ward_names(ward_geojson: str) -> List[str]:
+    """Load unique ward names from Ward_(OpenData).geojson."""
+    with open(ward_geojson, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    names: List[str] = []
+    seen: Set[str] = set()
+    for feat in data.get("features", []):
+        props = feat.get("properties", {}) or {}
+        raw_name = str(props.get("WardNameDescription", "")).strip()
+        if not raw_name:
+            continue
+        key = raw_name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(raw_name)
+    return names
+
+
+def ward_name_to_filename(ward_name: str) -> str:
+    """Convert a ward name into a safe lowercase HTML filename."""
+    slug = re.sub(r"[^a-z0-9]+", "-", ward_name.strip().lower()).strip("-")
+    slug = slug or "ward"
+    return f"{slug}.html"
 
 
 # ----------------------------
@@ -2188,6 +2218,14 @@ def main() -> None:
     ap.add_argument("--ward", default=None, help="Filter by ward name from Ward_(OpenData).geojson (e.g. 'Hornby')")
     ap.add_argument("--ward-geojson", default="Ward_(OpenData).geojson", help="Path to Ward_(OpenData).geojson")
     ap.add_argument(
+        "--all-wards-out-dir",
+        default=None,
+        help=(
+            "Generate one HTML per ward in this output directory (e.g. hornby.html). "
+            "When set, runs this script once per ward using --ward automatically."
+        ),
+    )
+    ap.add_argument(
         "--routes",
         default=None,
         help="Optional route filter by route_id/route_short_name (comma-separated, e.g. 100,101).",
@@ -2210,6 +2248,55 @@ def main() -> None:
     ap.add_argument("--tracks-geojson", default="Track_(OpenData).geojson", help="Optional GeoJSON file of walkable tracks to include in routing graph")
 
     args = ap.parse_args()
+
+    if args.all_wards_out_dir:
+        if args.ward:
+            raise SystemExit("--all-wards-out-dir cannot be combined with --ward.")
+        os.makedirs(args.all_wards_out_dir, exist_ok=True)
+        ward_names = load_ward_names(args.ward_geojson)
+        if not ward_names:
+            raise SystemExit(f"No wards found in {args.ward_geojson}")
+
+        print(f"Generating {len(ward_names)} ward maps into: {args.all_wards_out_dir}")
+        for ward_name in ward_names:
+            out_file = os.path.join(args.all_wards_out_dir, ward_name_to_filename(ward_name))
+            cmd = [
+                sys.executable,
+                os.path.abspath(__file__),
+                "--addresses", args.addresses,
+                "--roads", args.roads,
+                "--gtfs", args.gtfs,
+                "--out", out_file,
+                "--ward", ward_name,
+                "--ward-geojson", args.ward_geojson,
+                "--max-addresses", str(args.max_addresses),
+                "--max-roads", str(args.max_roads),
+                "--max-stops", str(args.max_stops),
+                "--densify-m", str(args.densify_m),
+                "--display-road-limit", str(args.display_road_limit),
+                "--color-max-m", str(args.color_max_m),
+                "--road-draw-weight", str(args.road_draw_weight),
+                "--road-stop-sample-m", str(args.road_stop_sample_m),
+                "--max-road-samples", str(args.max_road_samples),
+                "--draw-simplify-m", str(args.draw_simplify_m),
+                "--graph-precision", str(args.graph_precision),
+                "--tracks-geojson", args.tracks_geojson,
+            ]
+            if args.town:
+                cmd.extend(["--town", args.town])
+            if args.ta:
+                cmd.extend(["--ta", args.ta])
+            if args.bbox:
+                cmd.extend(["--bbox", *[str(v) for v in args.bbox]])
+            if args.routes:
+                cmd.extend(["--routes", args.routes])
+            if args.draw_all_route_shapes:
+                cmd.append("--draw-all-route-shapes")
+
+            print(f"\n[{ward_name}] -> {out_file}")
+            subprocess.run(cmd, check=True)
+        return
+
     bbox = parse_bbox(args.bbox)
     ward_geom = None
     ward_bbox = None
