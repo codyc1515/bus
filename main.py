@@ -1118,6 +1118,14 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       if (marker.getPopup && marker.getPopup()) {
         marker.getPopup().setContent(html);
       }
+
+      // Keep the hover text in sync so address changes are visible without
+      // opening each popup.
+      if (marker.bindTooltip) {
+        const streetTxt = a.displayAddress || '(address)';
+        const tip = `${streetTxt}\n${nTxt} · ${dTxt}`;
+        marker.bindTooltip(tip, { sticky: true });
+      }
     }
   }
 
@@ -2189,6 +2197,7 @@ def main() -> None:
                 "id": addr_id,
                 "lat": float(lat),
                 "lon": float(lon),
+                "displayAddress": full_addr,
                 "markerRefName": marker.get_name(),
                 "basePopupHtml": popup_html_base,
                 "nearestStopName": nearest_stop_txt,
