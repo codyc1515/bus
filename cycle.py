@@ -123,7 +123,13 @@ def load_addresses(
     return addr
 
 
-def load_cycleways(cycleways_geojson: str, bbox: Optional[BBox], ward_geom) -> List[LineString]:
+def load_cycleways(
+    cycleways_geojson: str,
+    bbox: Optional[BBox],
+    ward_geom,
+    inservice_only: bool,
+    public_only: bool,
+) -> List[LineString]:
     with open(cycleways_geojson, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -145,7 +151,9 @@ def load_cycleways(cycleways_geojson: str, bbox: Optional[BBox], ward_geom) -> L
         props = feat.get("properties", {}) or {}
         service_status = str(props.get("ServiceStatus", "")).strip().casefold()
         public_relevance = str(props.get("PublicRelevance", "")).strip().casefold()
-        if service_status != "in service" or public_relevance != "public":
+        if inservice_only and service_status != "in service":
+            continue
+        if public_only and public_relevance != "public":
             continue
 
         geom_data = feat.get("geometry")
@@ -287,6 +295,18 @@ def main() -> None:
     ap.add_argument("--town", default=None)
     ap.add_argument("--ta", default=None)
     ap.add_argument("--max-addresses", type=int, default=10000)
+    ap.add_argument(
+        "--inservice-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Filter cycleways to ServiceStatus='in service' (use --no-inservice-only to disable).",
+    )
+    ap.add_argument(
+        "--public-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Filter cycleways to PublicRelevance='public' (use --no-public-only to disable).",
+    )
     args = ap.parse_args()
 
     bbox = parse_bbox(args.bbox)
@@ -300,7 +320,13 @@ def main() -> None:
         ward_geom=ward_geom,
         max_addresses=args.max_addresses,
     )
-    cycle_lines = load_cycleways(args.cycleways, bbox=bbox, ward_geom=ward_geom)
+    cycle_lines = load_cycleways(
+        args.cycleways,
+        bbox=bbox,
+        ward_geom=ward_geom,
+        inservice_only=args.inservice_only,
+        public_only=args.public_only,
+    )
     addr = compute_distances(addr, cycle_lines)
 
     build_map(addr, cycle_lines, args.out)
