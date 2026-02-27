@@ -778,17 +778,24 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return (n > 0 ? `+${n}` : `${n}`);
   }
 
-  function appendLogLine(key, reason, prevStats, nextStats) {
+  function appendLogLine(key, reason, baseStats, nextStats) {
     const log = document.getElementById('__svcLog');
     if (!log) return;
 
     if (!window.__logEntryEls) window.__logEntryEls = {};
 
-    const dServed = nextStats.served - (prevStats ? prevStats.served : nextStats.served);
+    const dServed = nextStats.served - (baseStats ? baseStats.served : nextStats.served);
 
     let line = window.__logEntryEls[key] || null;
-    const isNew = !line;
 
+    // If the action's net effect returned to zero, remove it from the log.
+    if (isFinite(dServed) && dServed === 0) {
+      if (line && line.parentNode) line.parentNode.removeChild(line);
+      delete window.__logEntryEls[key];
+      return;
+    }
+
+    const isNew = !line;
     if (!line) {
       line = document.createElement('div');
       line.style.borderTop = '1px solid rgba(0,0,0,0.08)';
@@ -848,20 +855,18 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       renderStartingStats(nextStats);
     }
 
-    // For per-item log lines (e.g., a specific bus stop), compute deltas against
-    // the last time THAT item was updated, not whatever the most recent action was.
-    if (!window.__lastSvcStatsByKey) window.__lastSvcStatsByKey = {};
-    const prevByKey = (logKey && window.__lastSvcStatsByKey[logKey]) ? window.__lastSvcStatsByKey[logKey] : null;
-
-    // Still keep a global "last" so the panel represents the latest state.
-    const prevGlobal = window.__lastSvcStats || null;
+    // For each log key, keep a stable baseline so entries show net change from
+    // the original state and disappear when they return to zero.
+    if (!window.__baseSvcStatsByKey) window.__baseSvcStatsByKey = {};
 
     renderStats(nextStats);
 
     if (reason) {
-      const prevForDelta = prevByKey || prevGlobal;
-      appendLogLine(logKey || reason, reason, prevForDelta, nextStats);
-      if (logKey) window.__lastSvcStatsByKey[logKey] = nextStats;
+      const key = logKey || reason;
+      if (!window.__baseSvcStatsByKey[key]) {
+        window.__baseSvcStatsByKey[key] = window.__startingSvcStats || nextStats;
+      }
+      appendLogLine(key, reason, window.__baseSvcStatsByKey[key], nextStats);
     }
 
     window.__lastSvcStats = nextStats;
