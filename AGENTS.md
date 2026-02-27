@@ -1,0 +1,1 @@
+- Avoid looking through the contents of the .csv or .geojson files if possible to speed up performance.
