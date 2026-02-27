@@ -696,9 +696,22 @@ def linestring_sample_points_latlon(
     return [[float(lat), float(lon)] for lon, lat in dense]
 
 
-def compact_json(data) -> str:
+def quantize_json_numbers(data, precision: Optional[int]):
+    """Round floats recursively before JSON serialization to reduce payload size."""
+    if precision is None:
+        return data
+    if isinstance(data, dict):
+        return {k: quantize_json_numbers(v, precision) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [quantize_json_numbers(v, precision) for v in data]
+    if isinstance(data, (float, np.floating)):
+        return round(float(data), precision)
+    return data
+
+
+def compact_json(data, precision: Optional[int] = None) -> str:
     """Serialize JSON with minimal whitespace for smaller HTML output."""
-    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(quantize_json_numbers(data, precision), separators=(",", ":"), ensure_ascii=False)
 
 
 def simplify_linestring_for_draw(
@@ -2554,7 +2567,7 @@ def main() -> None:
     ]
     m.get_root().html.add_child(
         Element(
-            f"<script>window.__graphData = {compact_json({'nodes': graph_nodes_js, 'edges': graph_edges_js})};</script>"
+            f"<script>window.__graphData = {compact_json({'nodes': graph_nodes_js, 'edges': graph_edges_js}, precision=max(0, int(args.graph_precision)))};</script>"
         )
     )
 
@@ -2685,7 +2698,7 @@ def main() -> None:
 
     # Expose route polylines to JS so we can click to add a new stop
     m.get_root().html.add_child(Element(f"<script>window.__routeShapeRefs = {compact_json(route_shape_refs)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeShapeMeta = {compact_json(route_shape_meta)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeShapeMeta = {compact_json(route_shape_meta, precision=max(0, int(args.graph_precision)))};</script>"))
 
     # --- stops data for draggable JS overlay (no static stop markers) ---
     stop_js_data: List[dict] = []
@@ -2713,9 +2726,9 @@ def main() -> None:
         })
 
     # Expose stops to JS for draggable overlay
-    m.get_root().html.add_child(Element(f"<script>window.__stopData = {compact_json(stop_js_data)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeOptions = {compact_json(route_options_js)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeValueToIds = {compact_json(route_value_to_ids_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__stopData = {compact_json(stop_js_data, precision=max(0, int(args.graph_precision)))};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeOptions = {compact_json(route_options_js, precision=max(0, int(args.graph_precision)))};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeValueToIds = {compact_json(route_value_to_ids_js, precision=max(0, int(args.graph_precision)))};</script>"))
 
     # --- layer: roads (visual + coloured by nearest stop distance) ---
     fg_roads = folium.FeatureGroup(name="Roads (distance to stop)", show=True)
@@ -2794,7 +2807,7 @@ def main() -> None:
             })
 
     fg_roads.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__roadData = {compact_json(road_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__roadData = {compact_json(road_js, precision=max(0, int(args.graph_precision)))};</script>"))
 
     # --- layer: tracks (visual + coloured by nearest stop distance) ---
     fg_tracks = folium.FeatureGroup(name="Tracks (distance to stop)", show=True)
@@ -2839,7 +2852,7 @@ def main() -> None:
         })
 
     fg_tracks.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__trackData = {compact_json(track_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__trackData = {compact_json(track_js, precision=max(0, int(args.graph_precision)))};</script>"))
 
     # --- layer: addresses with nearest-stop distance ---
     fg_addr = folium.FeatureGroup(name="Addresses", show=True)
@@ -2925,7 +2938,7 @@ def main() -> None:
         )
 
     fg_addr.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__addrData = {compact_json(addr_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__addrData = {compact_json(addr_js, precision=max(0, int(args.graph_precision)))};</script>"))
 
     # Emit the click bindings in one place (ensures marker JS variables exist)
     if bind_js:
