@@ -399,8 +399,9 @@ def add_lines_to_graph(
     densify_m: float,
     tf_to_m: Transformer,
     kind: str,
-) -> None:
-    """Add named linework to graph."""
+) -> Set[Tuple[float, float]]:
+    """Add named linework to graph and return added nodes."""
+    added_nodes: Set[Tuple[float, float]] = set()
     for ls, name in lines:
         dense = densify_linestring(ls, max_segment_m=densify_m, tf_to_m=tf_to_m)
         if len(dense) < 2:
@@ -416,6 +417,9 @@ def add_lines_to_graph(
             if n1 == n2:
                 continue
 
+            added_nodes.add(n1)
+            added_nodes.add(n2)
+
             if g.has_edge(n1, n2):
                 if w < g[n1][n2].get("weight", w):
                     g[n1][n2]["weight"] = w
@@ -423,6 +427,45 @@ def add_lines_to_graph(
                     g[n1][n2]["kind"] = kind
             else:
                 g.add_edge(n1, n2, weight=w, road=name, kind=kind)
+
+    return added_nodes
+
+
+def connect_track_nodes_to_graph(
+    g: nx.Graph,
+    track_nodes: Set[Tuple[float, float]],
+    base_nodes: np.ndarray,
+    tf_to_m: Transformer,
+    max_link_m: float = 20.0,
+) -> None:
+    """Stitch track nodes to nearest existing graph nodes when very close.
+
+    Many park tracks are digitised as polygons that stop just short of roads.
+    Without a short connector edge, routing cannot traverse tracks even when
+    they are effectively connected in reality.
+    """
+    if not track_nodes or base_nodes.size == 0:
+        return
+
+    base_kd = cKDTree(base_nodes)
+
+    for lon, lat in track_nodes:
+        _, idx = base_kd.query([lon, lat], k=1)
+        n2 = (float(base_nodes[int(idx), 0]), float(base_nodes[int(idx), 1]))
+        n1 = (float(lon), float(lat))
+        if n1 == n2:
+            continue
+
+        x1, y1 = tf_to_m.transform(lat, lon)
+        x2, y2 = tf_to_m.transform(n2[1], n2[0])
+        w = float(math.hypot(x2 - x1, y2 - y1))
+        if w > max_link_m:
+            continue
+
+        if g.has_edge(n1, n2):
+            continue
+
+        g.add_edge(n1, n2, weight=w, road="track connector", kind="track")
 
 
 def snap_to_graph_node(kdtree: cKDTree, nodes_arr: np.ndarray, lon: float, lat: float) -> Tuple[Tuple[float, float], float]:
@@ -1275,12 +1318,19 @@ def main() -> None:
 
     track_lines = load_track_lines_geojson(args.tracks_geojson, bbox=bbox)
     if track_lines:
-        add_lines_to_graph(
+        track_nodes = add_lines_to_graph(
             g,
             lines=track_lines,
             densify_m=float(args.densify_m),
             tf_to_m=tf_to_m,
             kind="track",
+        )
+        connect_track_nodes_to_graph(
+            g,
+            track_nodes=track_nodes,
+            base_nodes=nodes_arr,
+            tf_to_m=tf_to_m,
+            max_link_m=20.0,
         )
 
     nodes_arr = np.array([[n[0], n[1]] for n in g.nodes()], dtype=np.float64)
