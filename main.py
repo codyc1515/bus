@@ -548,6 +548,16 @@ def linestring_min_stop_distance_m(
     return float(best) if best is not None else None
 
 
+def linestring_sample_points_latlon(
+    ls: LineString,
+    tf_to_m: Transformer,
+    sample_every_m: float = 60.0,
+) -> List[List[float]]:
+    """Sample a LineString into [lat, lon] points for browser-side distance updates."""
+    dense = densify_linestring(ls, max_segment_m=sample_every_m, tf_to_m=tf_to_m)
+    return [[float(lat), float(lon)] for lon, lat in dense]
+
+
 def add_ui_and_interaction_js(m: folium.Map) -> None:
     """Inject UI + client-side distance/colour recompute on stop drag."""
     js = r"""
@@ -657,7 +667,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   // window.__stopData = [{id, lat, lon, name, routeIds}]
   // window.__routeOptions = [{id, label}]
   // window.__addrData = [{id, lat, lon, markerName, basePopupHtml, markerRefName, distM}]
-  // window.__roadData = [{polyRefName, dM}]
+  // window.__roadData = [{polyRefName, dM, samples}]
+  // window.__trackData = [{polyRefName, dM, samples}]
 
   function getByName(name) {
     try { return window[name]; } catch { return null; }
@@ -666,6 +677,25 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   function updateLegendMax(maxM) {
     const lbl = document.getElementById('__gradMaxLabel');
     if (lbl) lbl.textContent = `${maxM} m`;
+  }
+
+  function recalcLineDistancesFromStops(lineData) {
+    if (!lineData || !window.__stopData || !Array.isArray(window.__stopData)) return;
+    const grid = buildStopGrid(window.__stopData);
+    for (const line of lineData) {
+      const pts = Array.isArray(line.samples) ? line.samples : [];
+      if (!pts.length) {
+        line.dM = null;
+        continue;
+      }
+      let best = Infinity;
+      for (const pt of pts) {
+        if (!Array.isArray(pt) || pt.length < 2) continue;
+        const res = nearestStop(grid, pt[0], pt[1], 12, window.__activeRouteFilter);
+        if (res.distM != null && isFinite(res.distM) && res.distM < best) best = res.distM;
+      }
+      line.dM = isFinite(best) ? best : null;
+    }
   }
 
   function recolorAll(maxM) {
@@ -693,7 +723,17 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       }
     }
 
-    // If you also want route lines recoloured, do it here.
+    // Tracks
+    if (window.__trackData) {
+      for (const t of window.__trackData) {
+        const poly = getByName(t.polyRefName);
+        if (!poly) continue;
+        const c = distToColorHex(t.dM, maxM);
+        if (poly.setStyle) {
+          poly.setStyle({ color: c });
+        }
+      }
+    }
   }
 
   // ---------- serviceability stats ----------
@@ -921,6 +961,9 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         window.__routeStore[a.id] = [[a.lat, a.lon], [res.stop.lat, res.stop.lon]];
       }
     }
+
+    recalcLineDistancesFromStops(window.__roadData);
+    recalcLineDistancesFromStops(window.__trackData);
 
     recolorAll(window.__gradMaxM);
     updateAddressPopups();
@@ -1620,10 +1663,65 @@ def main() -> None:
             poly.add_to(fg_roads)
 
             # store poly reference + distance so the slider can recolour
-            road_js.append({"polyRefName": poly.get_name(), "dM": float(d_m) if d_m is not None else None})
+            road_js.append({
+                "polyRefName": poly.get_name(),
+                "dM": float(d_m) if d_m is not None else None,
+                "samples": linestring_sample_points_latlon(
+                    ls,
+                    tf_to_m=tf_to_m,
+                    sample_every_m=max(30.0, float(args.road_stop_sample_m)),
+                ),
+            })
 
     fg_roads.add_to(m)
     m.get_root().html.add_child(Element(f"<script>window.__roadData = {json.dumps(road_js)};</script>"))
+
+    # --- layer: tracks (visual + coloured by nearest stop distance) ---
+    fg_tracks = folium.FeatureGroup(name="Tracks (distance to stop)", show=True)
+    track_js: List[dict] = []
+
+    for ls, track_name in track_lines:
+        coords = list(ls.coords)
+        if len(coords) < 2:
+            continue
+        if effective_bbox and not any(effective_bbox.contains_lonlat(x, y) for (x, y) in coords):
+            continue
+        if ward_geom is not None and not ward_geom.intersects(ls):
+            continue
+
+        d_m = linestring_min_stop_distance_m(
+            ls,
+            stop_kd=stop_kd,
+            stop_latlons=stop_latlons,
+            tf_to_m=tf_to_m,
+            sample_every_m=float(args.road_stop_sample_m),
+        )
+
+        color = dist_to_green_red_hex(d_m, max_m=float(args.color_max_m))
+        d_label = "N/A" if d_m is None else f"{d_m:,.0f} m"
+        tip = f"{track_name} — nearest stop: {d_label}"
+
+        poly = folium.PolyLine(
+            locations=[(y, x) for (x, y) in coords],
+            weight=max(2.0, float(args.road_draw_weight) - 0.5),
+            opacity=0.8,
+            color=color,
+            tooltip=tip,
+        )
+        poly.add_to(fg_tracks)
+
+        track_js.append({
+            "polyRefName": poly.get_name(),
+            "dM": float(d_m) if d_m is not None else None,
+            "samples": linestring_sample_points_latlon(
+                ls,
+                tf_to_m=tf_to_m,
+                sample_every_m=max(30.0, float(args.road_stop_sample_m)),
+            ),
+        })
+
+    fg_tracks.add_to(m)
+    m.get_root().html.add_child(Element(f"<script>window.__trackData = {json.dumps(track_js)};</script>"))
 
     # --- layer: addresses with nearest-stop distance ---
     fg_addr = folium.FeatureGroup(name="Addresses", show=True)
