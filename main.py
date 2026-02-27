@@ -702,7 +702,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     window.__lastSvcStats = nextStats;
   }
 
-  function updateAddressPopupsInteractive() {
+  function updateAddressPopups() {
     if (!window.__addrData) return;
     for (const a of window.__addrData) {
       const marker = getByName(a.markerRefName);
@@ -710,10 +710,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       // Replace only the fields we control. Keep the rest of the HTML.
       const dTxt = (a.distM == null) ? 'N/A' : `${Math.round(a.distM).toLocaleString()} m`;
       const nTxt = a.nearestStopName || 'N/A';
+      const methodTxt = a.methodology || 'N/A';
       const html = a.basePopupHtml
         .replace('__NEAREST__', nTxt)
         .replace('__DIST__', dTxt)
-        .replace('__METHOD__', 'interactive (straight-line)');
+        .replace('__METHOD__', methodTxt);
 
       if (marker.getPopup && marker.getPopup()) {
         marker.getPopup().setContent(html);
@@ -721,7 +722,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
   }
 
-  function recalcAddressesFromStops(reason, logKey) {
+  function recalcAddressesFromStops(reason, logKey, methodOverride) {
     if (!window.__stopData || !window.__addrData) return;
 
     const grid = buildStopGrid(window.__stopData);
@@ -730,6 +731,9 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const res = nearestStop(grid, a.lat, a.lon, 12, window.__activeRouteFilter);
       a.distM = res.distM;
       a.nearestStopName = (res.stop && res.stop.name) ? res.stop.name : 'N/A';
+      if (methodOverride !== undefined && methodOverride !== null) {
+        a.methodology = methodOverride;
+      }
 
       // Update highlight route to point at the NEW nearest stop position.
       // We only have straight-line client-side, so set route to [address, stop].
@@ -739,7 +743,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
 
     recolorAll(window.__gradMaxM);
-    updateAddressPopupsInteractive();
+    updateAddressPopups();
     updateSummary(reason || 'bus stop moved', logKey || 'stop:unknown');
   }
 
@@ -763,7 +767,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     sel.addEventListener('change', function() {
       const picked = Array.from(sel.selectedOptions).map(o => String(o.value));
       window.__activeRouteFilter = new Set(picked);
-      recalcAddressesFromStops(`route filter changed (${picked.length} selected)`, 'route-filter');
+      recalcAddressesFromStops(`route filter changed (${picked.length} selected)`, 'route-filter', null);
     });
   }
 
@@ -852,7 +856,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         s.lat = ll.lat;
         s.lon = ll.lng;
         const label = (s.name || s.id || sid);
-        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`);
+        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive (straight-line)');
       });
 
       // Right click to remove
@@ -871,7 +875,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         delete window.__stopMarkers[sid];
 
         // Update distances + stats/log
-        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`);
+        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive (straight-line)');
       });
 
       window.__stopMarkers[sid] = mk;
@@ -887,7 +891,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
-      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`);
+      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive (straight-line)');
     };
   }
 
@@ -1491,6 +1495,7 @@ def main() -> None:
                 "basePopupHtml": popup_html_base,
                 "nearestStopName": nearest_stop_txt,
                 "distM": float(dist_for_colour_m) if dist_for_colour_m is not None else None,
+                "methodology": method_txt,
             }
         )
 
