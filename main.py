@@ -893,17 +893,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   }
 
   function recalcAddressesFromStops(reason, logKey, methodOverride) {
-    // Road-only policy:
-    // Interactive client-side recalculation cannot reproduce the server-side
-    // road/track shortest-path methodology, so we do not recompute distances
-    // here (except for explicitly allowed methods).
-    if (methodOverride && String(methodOverride).startsWith('interactive')) {
-      const summaryReason = reason || 'bus stop moved';
-      const summaryKey = (logKey === undefined) ? 'stop:unknown' : logKey;
-      updateSummary(`${summaryReason} (road-only mode: rerun build to recalculate)`, summaryKey);
-      return;
-    }
-
     if (!window.__stopData || !window.__addrData) return;
 
     const grid = buildStopGrid(window.__stopData);
@@ -1079,7 +1068,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         s.lat = ll.lat;
         s.lon = ll.lng;
         const label = (s.name || s.id || sid);
-        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive (road-only; deferred recalculation)');
+        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive straight-line');
       });
 
       // Right click to remove
@@ -1098,7 +1087,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         delete window.__stopMarkers[sid];
 
         // Update distances + stats/log
-        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive (road-only; deferred recalculation)');
+        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive straight-line');
       });
 
       window.__stopMarkers[sid] = mk;
@@ -1114,7 +1103,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
-      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive (road-only; deferred recalculation)');
+      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive straight-line');
     };
   }
 
