@@ -224,7 +224,7 @@ def build_map(addr: pd.DataFrame, cycleways: List[Dict[str, Any]], out_html: str
             popup=popup,
         )
         marker.add_to(m)
-        points.append({"dist": dist, "marker": marker.get_name()})
+        points.append({"dist": dist, "marker": marker.get_name(), "lat": float(r["lat"]), "lon": float(r["lon"])})
 
     within_min = int((addr["nearest_cycleway_m"] <= MIN_DISTANCE_M).sum())
     within_max = int((addr["nearest_cycleway_m"] <= MAX_DISTANCE_M).sum())
@@ -275,11 +275,74 @@ def build_map(addr: pd.DataFrame, cycleways: List[Dict[str, Any]], out_html: str
 
       function recolor(maxM) {{
         document.getElementById('thrLabel').textContent = String(maxM);
+        let withinMin = 0;
+        let withinMax = 0;
+        let withinRange = 0;
         for (const p of points) {{
           const c = colorForDist(p.dist, maxM);
+          if (Number.isFinite(p.dist) && p.dist <= {MIN_DISTANCE_M}) withinMin += 1;
+          if (Number.isFinite(p.dist) && p.dist <= {MAX_DISTANCE_M}) withinMax += 1;
+          if (Number.isFinite(p.dist) && p.dist >= {MIN_DISTANCE_M} && p.dist <= {MAX_DISTANCE_M}) withinRange += 1;
           const mk = window[p.marker];
           if (!mk) continue;
           mk.setStyle({{color: c, fillColor: c}});
+        }}
+        document.getElementById('sumMin').textContent = String(withinMin);
+        document.getElementById('sumMax').textContent = String(withinMax);
+        document.getElementById('sumRange').textContent = String(withinRange);
+      }}
+
+      function pointSegmentDistanceM(lat, lon, a, b) {{
+        const rad = Math.PI / 180;
+        const meanLat = (lat + a.lat + b.lat) / 3;
+        const yScale = 111132;
+        const xScale = 111320 * Math.cos(meanLat * rad);
+        const px = lon * xScale;
+        const py = lat * yScale;
+        const ax = a.lng * xScale;
+        const ay = a.lat * yScale;
+        const bx = b.lng * xScale;
+        const by = b.lat * yScale;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const den = dx * dx + dy * dy;
+        let t = 0;
+        if (den > 0) t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / den));
+        const cx = ax + t * dx;
+        const cy = ay + t * dy;
+        const ex = px - cx;
+        const ey = py - cy;
+        return Math.sqrt(ex * ex + ey * ey);
+      }}
+
+      function flattenLatLngs(latlngs, out) {{
+        if (!Array.isArray(latlngs)) return;
+        for (const item of latlngs) {{
+          if (!item) continue;
+          if (Array.isArray(item)) flattenLatLngs(item, out);
+          else if (typeof item.lat === 'number' && typeof item.lng === 'number') out.push(item);
+        }}
+      }}
+
+      function recomputePointDistances(inserviceOn, publicOn) {{
+        const segments = [];
+        for (const overlay of cyclewayOverlays) {{
+          const show = (!inserviceOn || overlay.isInservice) && (!publicOn || overlay.isPublic);
+          if (!show) continue;
+          const layer = window[overlay.layer];
+          if (!layer || !layer.getLatLngs) continue;
+          const pts = [];
+          flattenLatLngs(layer.getLatLngs(), pts);
+          for (let i = 1; i < pts.length; i++) segments.push([pts[i - 1], pts[i]]);
+        }}
+
+        for (const p of points) {{
+          let best = Number.POSITIVE_INFINITY;
+          for (const seg of segments) {{
+            const d = pointSegmentDistanceM(p.lat, p.lon, seg[0], seg[1]);
+            if (d < best) best = d;
+          }}
+          p.dist = best;
         }}
       }}
 
@@ -295,6 +358,8 @@ def build_map(addr: pd.DataFrame, cycleways: List[Dict[str, Any]], out_html: str
             weight: show ? 3 : 0,
           }});
         }}
+        recomputePointDistances(inserviceOn, publicOn);
+        recolor(Number(document.getElementById('thrSlider').value));
       }}
 
       document.getElementById('thrSlider').addEventListener('input', (e) => recolor(Number(e.target.value)));
