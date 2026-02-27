@@ -1,4 +1,4 @@
-# Deploy generated index.html to GitHub Pages
+# Deploy generated index.html to GitHub Pages and commit it to repo root
 name: Deploy Hornby Ward Map
 
 on:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # <-- needs write to push index.html back
   pages: write
   id-token: write
 
@@ -16,7 +16,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build_commit_deploy:
+    # prevent infinite loop when the bot pushes index.html
+    if: github.actor != 'github-actions[bot]'
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -25,6 +28,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,9 +46,27 @@ jobs:
       - name: Run generator
         run: |
           python main.py --ward Hornby
+          test -f index.html
 
+      # Commit index.html back to the repo root (main branch)
+      - name: Commit index.html to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Only commit if changed
+          if git diff --quiet -- index.html; then
+            echo "index.html unchanged; nothing to commit."
+          else
+            git add index.html
+            git commit -m "Update generated index.html (Hornby)"
+            git push
+          fi
+
+      # Prepare Pages artifact directory (Pages wants a folder)
       - name: Prepare Pages artifact directory
         run: |
+          rm -rf site
           mkdir -p site
           cp index.html site/index.html
 
