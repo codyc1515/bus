@@ -1474,6 +1474,15 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return `idx:${idx}`;
   }
 
+  function addressRouteKey(a, idx) {
+    if (!a) return `idx:${idx}`;
+    if (a.routeKey != null) {
+      const routeTxt = String(a.routeKey).trim();
+      if (routeTxt !== '' && routeTxt.toLowerCase() !== 'nan') return routeTxt;
+    }
+    return addressKey(a, idx);
+  }
+
   function servedDeltaBreakdown(thresholdM) {
     const baselineServedIds = new Set();
     const currentServedIds = new Set();
@@ -1610,13 +1619,41 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
   }
 
+  function buildAddressRouteCoords(a, idx, sf, rt) {
+    if (!a || !sf || !rt || !window.__stopData) return null;
+    const asnap = nearestGraphNode(a.lat, a.lon);
+    if (asnap.idx == null || asnap.snapM == null) return null;
+
+    const core = sf.dist[asnap.idx];
+    if (!isFinite(core)) return null;
+    const si = sf.sourceStopIdx[asnap.idx];
+    if (si == null || si < 0 || si >= window.__stopData.length) return null;
+    const bestStop = window.__stopData[si];
+    if (!bestStop || !isFinite(bestStop.lat) || !isFinite(bestStop.lon)) return null;
+
+    const coords = [[a.lat, a.lon]];
+    let cur = asnap.idx;
+    const seen = new Set();
+    while (cur != null && cur >= 0 && !seen.has(cur)) {
+      seen.add(cur);
+      const nd = rt.nodes[cur];
+      if (Array.isArray(nd) && nd.length >= 2) coords.push([nd[0], nd[1]]);
+      const nx = sf.parent[cur];
+      if (nx == null || nx < 0) break;
+      cur = nx;
+    }
+    coords.push([bestStop.lat, bestStop.lon]);
+    return coords;
+  }
+
   function recalcAddressesFromStops(reason, logKey, methodOverride) {
     if (!window.__stopData || !window.__addrData) return;
     const sf = recomputeStopField();
     const rt = ensureGraphRuntime();
     if (!sf || !rt) return;
 
-    for (const a of window.__addrData) {
+    for (let i = 0; i < window.__addrData.length; i++) {
+      const a = window.__addrData[i];
       const asnap = nearestGraphNode(a.lat, a.lon);
       let bestStop = null;
       let bestDist = null;
@@ -1641,20 +1678,12 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       }
 
       // Update highlight route on the graph.
-      if (window.__routeStore && a.id && bestStop && asnap.idx != null) {
-        const coords = [[a.lat, a.lon]];
-        let cur = asnap.idx;
-        const seen = new Set();
-        while (cur != null && cur >= 0 && !seen.has(cur)) {
-          seen.add(cur);
-          const nd = rt.nodes[cur];
-          if (Array.isArray(nd) && nd.length >= 2) coords.push([nd[0], nd[1]]);
-          const nx = sf.parent[cur];
-          if (nx == null || nx < 0) break;
-          cur = nx;
+      const routeKey = addressRouteKey(a, i);
+      if (window.__routeStore && routeKey) {
+        const coords = buildAddressRouteCoords(a, i, sf, rt);
+        if (coords && coords.length >= 2) {
+          window.__routeStore[routeKey] = coords;
         }
-        coords.push([bestStop.lat, bestStop.lon]);
-        window.__routeStore[a.id] = coords;
       }
     }
 
@@ -2194,6 +2223,31 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   }
 
 
+
+  function showAddressRoute(map, a, idx) {
+    if (!window.__showRoute) return;
+    const routeKey = addressRouteKey(a, idx);
+    if (!routeKey) return;
+
+    let coords = null;
+    if (window.__routeStore) {
+      coords = window.__routeStore[routeKey] || null;
+    }
+
+    if ((!coords || coords.length < 2) && a) {
+      const sf = window.__stopField || recomputeStopField();
+      const rt = ensureGraphRuntime();
+      if (sf && rt) {
+        coords = buildAddressRouteCoords(a, idx, sf, rt);
+        if (coords && coords.length >= 2 && window.__routeStore) {
+          window.__routeStore[routeKey] = coords;
+        }
+      }
+    }
+
+    window.__showRoute(map, routeKey);
+  }
+
   function installClientLayers(map) {
     if (!map) return;
 
@@ -2211,6 +2265,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
           smoothFactor: 1.5,
         });
         if (r.tip) poly.bindTooltip(String(r.tip));
+        if (r.name) poly.bindPopup(`<b>${escapeHtml(String(r.name))}</b>`, { maxWidth: 300 });
         poly.addTo(window.__roadLayerGroup);
         r.layerRef = poly;
       }
@@ -2226,13 +2281,16 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
           smoothFactor: 1.5,
         });
         if (t.tip) poly.bindTooltip(String(t.tip));
+        if (t.name) poly.bindPopup(`<b>${escapeHtml(String(t.name))}</b>`, { maxWidth: 300 });
         poly.addTo(window.__trackLayerGroup);
         t.layerRef = poly;
       }
     }
 
     if (Array.isArray(window.__addrData)) {
-      for (const a of window.__addrData) {
+      for (let i = 0; i < window.__addrData.length; i++) {
+        const a = window.__addrData[i];
+        const routeKey = addressRouteKey(a, i);
         const c = L.circleMarker([a.lat, a.lon], {
           radius: 3,
           weight: 2,
@@ -2240,7 +2298,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
           fillColor: '#9e9e9e',
           fillOpacity: 0.95,
           opacity: 1.0,
-          pane: 'stopsPane',
+          pane: 'addressesPane',
         });
         if (a.tooltip) c.bindTooltip(String(a.tooltip));
         if (a.basePopupHtml) {
@@ -2251,7 +2309,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
           c.bindPopup(html, { maxWidth: 360 });
         }
         c.on('click', function() {
-          if (window.__showRoute) window.__showRoute(map, a.id);
+          showAddressRoute(map, a, i);
         });
         c.addTo(window.__addrLayerGroup);
         a.layerRef = c;
@@ -2628,6 +2686,7 @@ def main() -> None:
     folium.map.CustomPane("roadsPane", z_index=410).add_to(m)
     folium.map.CustomPane("routesPane", z_index=420).add_to(m)
     folium.map.CustomPane("stopsPane", z_index=430).add_to(m)
+    folium.map.CustomPane("addressesPane", z_index=440).add_to(m)
 
     # Expose routable graph to JS so all interactive distance calculations
     # are done consistently client-side via roads + tracks.
@@ -2761,6 +2820,7 @@ def main() -> None:
                 smooth_factor=1.5,
                 tooltip=label,
                 color=color,
+                interactive=False,
             )
             poly_route.add_to(fg_routes)
             ref_name = poly_route.get_name()
@@ -2856,6 +2916,7 @@ def main() -> None:
             road_js.append({
                 "locations": [[float(y), float(x)] for (x, y) in coords],
                 "tip": tip,
+                "name": road_name if road_name else "(road)",
                 "weight": float(args.road_draw_weight),
                 "opacity": 0.75,
                 "dM": float(d_m) if d_m is not None else None,
@@ -2887,6 +2948,7 @@ def main() -> None:
         track_js.append({
             "locations": [[float(y), float(x)] for (x, y) in coords],
             "tip": tip,
+            "name": track_name,
             "weight": max(2.0, float(args.road_draw_weight) - 0.5),
             "opacity": 0.8,
             "dM": float(d_m) if d_m is not None else None,
