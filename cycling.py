@@ -6,8 +6,8 @@ stops with cycleways. It computes each address's nearest-cycleway distance and
 builds an interactive HTML map with:
 - cycleway polylines,
 - address markers coloured by distance,
-- a 400-800m threshold slider for live recolouring,
-- summary counts for <=400m, <=800m, and 400-800m.
+- a 200-800m threshold slider for live recolouring,
+- summary counts for <=200m, <=800m, and 200-800m.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
-def dist_to_green_red_hex(dist_m: Optional[float], max_m: float = 400.0) -> str:
+def dist_to_green_red_hex(dist_m: Optional[float], max_m: float = 200.0) -> str:
     if dist_m is None or not math.isfinite(dist_m):
         return "#ff0000"
     if dist_m > max_m:
@@ -195,7 +195,7 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
     points = []
     for _, r in addr.iterrows():
         dist = float(r["nearest_cycleway_m"])
-        color = dist_to_green_red_hex(dist, 400.0)
+        color = dist_to_green_red_hex(dist, 200.0)
         popup = folium.Popup(
             f"<b>{r.get('full_address', 'Address')}</b><br/>"
             f"Nearest cycleway: {dist:.1f} m",
@@ -214,9 +214,9 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
         marker.add_to(m)
         points.append({"dist": dist, "marker": marker.get_name()})
 
-    within_400 = int((addr["nearest_cycleway_m"] <= 400).sum())
+    within_200 = int((addr["nearest_cycleway_m"] <= 200).sum())
     within_800 = int((addr["nearest_cycleway_m"] <= 800).sum())
-    between_400_800 = int(((addr["nearest_cycleway_m"] >= 400) & (addr["nearest_cycleway_m"] <= 800)).sum())
+    between_200_800 = int(((addr["nearest_cycleway_m"] >= 200) & (addr["nearest_cycleway_m"] <= 800)).sum())
 
     panel_html = f"""
     <div id="cycling-controls" style="
@@ -226,12 +226,12 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
       box-shadow: 0 1px 8px rgba(0,0,0,0.25);">
       <b>Cycleway accessibility</b><br/>
       Total addresses: {len(addr)}<br/>
-      ≤400m: <span id="sum400">{within_400}</span><br/>
+      ≤200m: <span id="sum200">{within_200}</span><br/>
       ≤800m: <span id="sum800">{within_800}</span><br/>
-      400–800m: <span id="sum400800">{between_400_800}</span>
+      200–800m: <span id="sum200800">{between_200_800}</span>
       <hr style="margin:8px 0;"/>
-      Colour max distance: <span id="thrLabel">400</span>m
-      <input id="thrSlider" type="range" min="400" max="800" step="10" value="400" style="width:100%;"/>
+      Colour max distance: <span id="thrLabel">200</span>m
+      <input id="thrSlider" type="range" min="200" max="800" step="10" value="200" style="width:100%;"/>
       <div style="margin-top:4px;font-size:12px;color:#555;">Green=near, Yellow=at threshold, Red=over</div>
     </div>
     """
@@ -260,7 +260,7 @@ def build_map(addr: pd.DataFrame, cycle_lines: List[LineString], out_html: str) 
       }}
 
       document.getElementById('thrSlider').addEventListener('input', (e) => recolor(Number(e.target.value)));
-      recolor(400);
+      recolor(200);
     }})();
     </script>
     """
@@ -299,15 +299,15 @@ def main() -> None:
 
     build_map(addr, cycle_lines, args.out)
 
-    within_400 = int((addr["nearest_cycleway_m"] <= 400).sum())
+    within_200 = int((addr["nearest_cycleway_m"] <= 200).sum())
     within_800 = int((addr["nearest_cycleway_m"] <= 800).sum())
-    between_400_800 = int(((addr["nearest_cycleway_m"] >= 400) & (addr["nearest_cycleway_m"] <= 800)).sum())
+    between_200_800 = int(((addr["nearest_cycleway_m"] >= 200) & (addr["nearest_cycleway_m"] <= 800)).sum())
 
     print(f"Wrote {args.out}")
     print(f"Total addresses analysed: {len(addr)}")
-    print(f"Addresses within 400m of a cycleway: {within_400}")
+    print(f"Addresses within 200m of a cycleway: {within_200}")
     print(f"Addresses within 800m of a cycleway: {within_800}")
-    print(f"Addresses between 400m and 800m of a cycleway: {between_400_800}")
+    print(f"Addresses between 200m and 800m of a cycleway: {between_200_800}")
 
 
 if __name__ == "__main__":
