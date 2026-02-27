@@ -42,6 +42,7 @@ import os
 import re
 import subprocess
 import sys
+import csv
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 import json
@@ -55,6 +56,21 @@ from shapely.geometry import LineString, Point, shape
 from pyproj import Transformer
 from scipy.spatial import cKDTree
 from folium import Element
+
+
+SUMMARY_HEADERS = [
+    "output_file",
+    "ward",
+    "addresses",
+    "stops",
+    "routes",
+    "addresses_per_stop",
+    "addresses_per_route",
+    "roads_graph_nodes",
+    "roads_graph_edges",
+    "tracks_loaded",
+    "bbox",
+]
 
 
 # ----------------------------
@@ -575,7 +591,7 @@ def connect_track_nodes_to_graph(
     track_nodes: Set[Tuple[float, float]],
     base_nodes: np.ndarray,
     tf_to_m: Transformer,
-    max_link_m: float = 20.0,
+    max_link_m: float = 50.0,
     max_track_neighbours: int = 2,
 ) -> None:
     """Stitch track nodes to nearest existing graph nodes when very close.
@@ -2386,12 +2402,12 @@ def main() -> None:
         help="Optional route filter by route_id/route_short_name (comma-separated, e.g. 100,101).",
     )
 
-    ap.add_argument("--max-addresses", type=int, default=20000, help="Max addresses to load/plot after filtering")
-    ap.add_argument("--max-roads", type=int, default=200000, help="Max road rows to consider (after bbox filter)")
-    ap.add_argument("--max-stops", type=int, default=20000, help="Max stops to plot")
+    ap.add_argument("--max-addresses", type=int, default=99999, help="Max addresses to load/plot after filtering")
+    ap.add_argument("--max-roads", type=int, default=99999, help="Max road rows to consider (after bbox filter)")
+    ap.add_argument("--max-stops", type=int, default=99999, help="Max stops to plot")
 
     ap.add_argument("--densify-m", type=float, default=10.0, help="Densify road segments to this spacing (m). Lower = better snapping, heavier graph")
-    ap.add_argument("--display-road-limit", type=int, default=20000, help="How many road features to draw (visual only). Graph building uses --max-roads")
+    ap.add_argument("--display-road-limit", type=int, default=99999, help="How many road features to draw (visual only). Graph building uses --max-roads")
     ap.add_argument("--draw-all-route-shapes", action="store_true", help="Draw all shapes per route (can be heavy). Default limits to 5 per route")
 
     ap.add_argument("--color-max-m", type=float, default=400.0, help="Initial colour scale clamp (slider allows 400..800)")
@@ -2404,7 +2420,7 @@ def main() -> None:
     ap.add_argument(
         "--track-link-max-m",
         type=float,
-        default=20.0,
+        default=50.0,
         help="Max distance (m) for connector edges that stitch track nodes to roads/nearby tracks",
     )
     ap.add_argument(
@@ -2412,6 +2428,11 @@ def main() -> None:
         type=int,
         default=2,
         help="Max nearby track neighbours to connect per track node (limits graph blow-up)",
+    )
+    ap.add_argument(
+        "--summary-no-header",
+        action="store_true",
+        help="Skip printing the CSV header row.",
     )
 
     args = ap.parse_args()
@@ -2427,7 +2448,8 @@ def main() -> None:
         skip_ward_names = {"banks peninsula"}
         wards_to_generate = [name for name in ward_names if name.strip().lower() not in skip_ward_names]
 
-        print(f"Generating {len(wards_to_generate)} ward maps into: {args.all_wards_out_dir}")
+        if not args.summary_no_header:
+            csv.writer(sys.stdout, lineterminator="\n").writerow(SUMMARY_HEADERS)
         for ward_name in wards_to_generate:
             out_file = os.path.join(args.all_wards_out_dir, ward_name_to_filename(ward_name))
             cmd = [
@@ -2464,8 +2486,7 @@ def main() -> None:
                 cmd.extend(["--routes", args.routes])
             if args.draw_all_route_shapes:
                 cmd.append("--draw-all-route-shapes")
-
-            print(f"\n[{ward_name}] -> {out_file}")
+            cmd.append("--summary-no-header")
             subprocess.run(cmd, check=True)
         return
 
@@ -3000,14 +3021,25 @@ def main() -> None:
 
     m.save(args.out)
 
-    print(f"Wrote: {args.out}")
-    print(
-        f"Addresses: {len(addr):,} | Stops: {len(stops):,} | Roads graph nodes: {len(g.nodes):,} edges: {len(g.edges):,} | Tracks loaded: {len(track_lines):,}"
-    )
-    if bbox:
-        print(f"BBox: {bbox}")
-    if args.ward:
-        print(f"Ward: {args.ward}")
+    route_count = int(routes["route_id"].astype(str).nunique()) if "route_id" in routes.columns else 0
+    summary_row = [
+        args.out,
+        args.ward or "",
+        len(addr),
+        len(stops),
+        route_count,
+        f"{len(addr)}/{len(stops)}" if len(stops) else "",
+        f"{len(addr)}/{route_count}" if route_count else "",
+        len(g.nodes),
+        len(g.edges),
+        len(track_lines),
+        str(bbox) if bbox else "",
+    ]
+
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    if not args.summary_no_header:
+        writer.writerow(SUMMARY_HEADERS)
+    writer.writerow(summary_row)
 
 
 if __name__ == "__main__":
