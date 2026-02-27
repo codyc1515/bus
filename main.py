@@ -335,6 +335,96 @@ def build_road_graph(
     return g, nodes
 
 
+def load_track_lines_geojson(path: str, bbox: Optional[BBox]) -> List[Tuple[LineString, str]]:
+    """Load track geometries from GeoJSON and return routable linework.
+
+    For polygonal tracks, we use the polygon boundary to approximate walkable
+    track paths.
+    """
+    if not os.path.exists(path):
+        return []
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+
+    feats = data.get("features", []) if isinstance(data, dict) else []
+    out: List[Tuple[LineString, str]] = []
+
+    for ft in feats:
+        if not isinstance(ft, dict):
+            continue
+        geom = ft.get("geometry")
+        if not geom:
+            continue
+        props = ft.get("properties") or {}
+
+        track_id = str(props.get("TrackID", "")).strip()
+        site_name = str(props.get("SiteName", "")).strip()
+        name = site_name if site_name else f"track {track_id}" if track_id and track_id.lower() != "nan" else "track"
+
+        try:
+            sh = shape(geom)
+        except Exception:
+            continue
+
+        geoms: List[LineString] = []
+        if sh.geom_type == "LineString":
+            geoms = [sh]
+        elif sh.geom_type == "MultiLineString":
+            geoms = [g for g in sh.geoms if g.geom_type == "LineString"]
+        elif sh.geom_type in {"Polygon", "MultiPolygon"}:
+            b = sh.boundary
+            if b.geom_type == "LineString":
+                geoms = [b]
+            elif b.geom_type == "MultiLineString":
+                geoms = [g for g in b.geoms if g.geom_type == "LineString"]
+
+        for ls in geoms:
+            coords = list(ls.coords)
+            if len(coords) < 2:
+                continue
+            if bbox and not any(bbox.contains_lonlat(x, y) for (x, y) in coords):
+                continue
+            out.append((ls, name))
+
+    return out
+
+
+def add_lines_to_graph(
+    g: nx.Graph,
+    lines: List[Tuple[LineString, str]],
+    densify_m: float,
+    tf_to_m: Transformer,
+    kind: str,
+) -> None:
+    """Add named linework to graph."""
+    for ls, name in lines:
+        dense = densify_linestring(ls, max_segment_m=densify_m, tf_to_m=tf_to_m)
+        if len(dense) < 2:
+            continue
+
+        for (lon1, lat1), (lon2, lat2) in zip(dense[:-1], dense[1:]):
+            x1, y1 = tf_to_m.transform(lat1, lon1)
+            x2, y2 = tf_to_m.transform(lat2, lon2)
+            w = float(math.hypot(x2 - x1, y2 - y1))
+
+            n1 = (float(lon1), float(lat1))
+            n2 = (float(lon2), float(lat2))
+            if n1 == n2:
+                continue
+
+            if g.has_edge(n1, n2):
+                if w < g[n1][n2].get("weight", w):
+                    g[n1][n2]["weight"] = w
+                    g[n1][n2]["road"] = name
+                    g[n1][n2]["kind"] = kind
+            else:
+                g.add_edge(n1, n2, weight=w, road=name, kind=kind)
+
+
 def snap_to_graph_node(kdtree: cKDTree, nodes_arr: np.ndarray, lon: float, lat: float) -> Tuple[Tuple[float, float], float]:
     """Snap a lon/lat point to nearest graph node in lon/lat space."""
     dist, idx = kdtree.query([lon, lat], k=1)
@@ -344,26 +434,29 @@ def snap_to_graph_node(kdtree: cKDTree, nodes_arr: np.ndarray, lon: float, lat: 
 
 def shortest_path_details(
     g: nx.Graph, start: Tuple[float, float], end: Tuple[float, float]
-) -> Tuple[Optional[float], Optional[List[Tuple[float, float]]], Optional[int]]:
+) -> Tuple[Optional[float], Optional[List[Tuple[float, float]]], Optional[int], bool]:
     """Compute shortest path."""
     try:
         node_path = nx.shortest_path(g, start, end, weight="weight")
     except Exception:
-        return None, None, None
+        return None, None, None, False
 
     dist = 0.0
     segs = 0
     last_road = None
+    uses_track = False
 
     for u, v in zip(node_path[:-1], node_path[1:]):
         data = g.get_edge_data(u, v) or {}
         dist += float(data.get("weight", 0.0))
         road = str(data.get("road", "")).strip()
+        if str(data.get("kind", "road")) == "track":
+            uses_track = True
         if road != last_road:
             segs += 1
             last_road = road
 
-    return float(dist), node_path, int(segs)
+    return float(dist), node_path, int(segs), uses_track
 
 
 def linestring_min_stop_distance_m(
@@ -1006,6 +1099,7 @@ def main() -> None:
     ap.add_argument("--color-max-m", type=float, default=400.0, help="Initial colour scale clamp (slider allows 400..800)")
     ap.add_argument("--road-draw-weight", type=float, default=3.0, help="Road line thickness")
     ap.add_argument("--road-stop-sample-m", type=float, default=25.0, help="Sampling spacing (m) when estimating road distance to nearest stop")
+    ap.add_argument("--tracks-geojson", default="Track_(OpenData).geojson", help="Optional GeoJSON file of walkable tracks to include in routing graph")
 
     args = ap.parse_args()
     bbox = parse_bbox(args.bbox)
@@ -1175,10 +1269,21 @@ def main() -> None:
         densify_m=args.densify_m,
     )
 
-    node_kd = cKDTree(nodes_arr) if len(nodes_arr) else None
-
     # For snap-distance to metres + densify sampling
     tf_to_m = Transformer.from_crs("EPSG:4326", "EPSG:2193", always_xy=False)
+
+    track_lines = load_track_lines_geojson(args.tracks_geojson, bbox=bbox)
+    if track_lines:
+        add_lines_to_graph(
+            g,
+            lines=track_lines,
+            densify_m=float(args.densify_m),
+            tf_to_m=tf_to_m,
+            kind="track",
+        )
+
+    nodes_arr = np.array([[n[0], n[1]] for n in g.nodes()], dtype=np.float64)
+    node_kd = cKDTree(nodes_arr) if len(nodes_arr) else None
 
     # --- choose map centre ---
     centre_lat = float(addr["lat"].mean())
@@ -1426,12 +1531,13 @@ def main() -> None:
             network_m: Optional[float] = None
             road_segs: Optional[int] = None
             node_path: Optional[List[Tuple[float, float]]] = None
+            used_track = False
 
             if node_kd is not None and len(nodes_arr) and len(g.nodes) > 0:
                 start_node, _ = snap_to_graph_node(node_kd, nodes_arr, lon, lat)
                 end_node, _ = snap_to_graph_node(node_kd, nodes_arr, stop_lon, stop_lat)
 
-                core_m, node_path, road_segs = shortest_path_details(g, start_node, end_node)
+                core_m, node_path, road_segs, used_track = shortest_path_details(g, start_node, end_node)
 
                 if core_m is not None and node_path is not None:
                     x_a, y_a = tf_to_m.transform(lat, lon)
@@ -1464,7 +1570,7 @@ def main() -> None:
                 roadseg_txt = "—"
                 route_coords = [(lat, lon), (stop_lat, stop_lon)]
             else:
-                method_txt = "roads"
+                method_txt = "roads + tracks" if used_track else "roads"
                 roadseg_txt = str(road_segs) if road_segs is not None else "?"
 
             dist_txt = f"{network_m:,.0f} m"
@@ -1557,7 +1663,7 @@ def main() -> None:
 
     print(f"Wrote: {args.out}")
     print(
-        f"Addresses: {len(addr):,} | Stops: {len(stops):,} | Roads graph nodes: {len(g.nodes):,} edges: {len(g.edges):,}"
+        f"Addresses: {len(addr):,} | Stops: {len(stops):,} | Roads graph nodes: {len(g.nodes):,} edges: {len(g.edges):,} | Tracks loaded: {len(track_lines):,}"
     )
     if bbox:
         print(f"BBox: {bbox}")
