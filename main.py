@@ -1347,7 +1347,10 @@ def main() -> None:
             rr = routes_idx.loc[rid]
             short_name = str(rr.get("route_short_name", "")).strip()
             long_name = str(rr.get("route_long_name", "")).strip()
-            label = short_name or long_name or f"route {rid}"
+            if short_name and long_name:
+                label = f"{short_name} {long_name}"
+            else:
+                label = short_name or long_name or f"route {rid}"
             route_options_js.append({"id": str(rid), "label": label})
 
     for route_id, polylines in shapes_by_route.items():
