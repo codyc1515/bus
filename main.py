@@ -889,7 +889,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         if (!poly) continue;
         const c = distToColorHex(t.dM, maxM);
         if (poly.setStyle) {
-          poly.setStyle({ color: c });
+          const nextOpacity = window.__showChangesOnly ? 0.0 : 0.8;
+          poly.setStyle({ color: c, opacity: nextOpacity });
         }
       }
     }
