@@ -1121,13 +1121,40 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return (n > 0 ? `+${n}` : `${n}`);
   }
 
-  function appendLogLine(key, reason, baseStats, nextStats) {
+  function getServedIdSet(thresholdM) {
+    const ids = new Set();
+    if (!window.__addrData) return ids;
+    for (const a of window.__addrData) {
+      if (a.distM != null && isFinite(a.distM) && a.distM <= thresholdM) {
+        ids.add(a.id);
+      }
+    }
+    return ids;
+  }
+
+  function servedDeltaBreakdown(baseServedIds, thresholdM) {
+    const currentServedIds = getServedIdSet(thresholdM);
+    let gained = 0;
+    let lost = 0;
+
+    for (const id of currentServedIds) {
+      if (!baseServedIds.has(id)) gained++;
+    }
+    for (const id of baseServedIds) {
+      if (!currentServedIds.has(id)) lost++;
+    }
+
+    return { gained, lost, net: gained - lost };
+  }
+
+  function appendLogLine(key, reason, delta) {
     const log = document.getElementById('__svcLog');
     if (!log) return;
 
     if (!window.__logEntryEls) window.__logEntryEls = {};
-
-    const dServed = nextStats.served - (baseStats ? baseStats.served : nextStats.served);
+    const dServed = delta && isFinite(delta.net) ? delta.net : 0;
+    const gained = delta && isFinite(delta.gained) ? delta.gained : 0;
+    const lost = delta && isFinite(delta.lost) ? delta.lost : 0;
 
     let line = window.__logEntryEls[key] || null;
 
@@ -1148,7 +1175,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
 
     // Show only net change in served, no timestamp.
-    const deltaTxt = (isFinite(dServed) ? `${fmtDelta(dServed)} served` : '±0 served');
+    const deltaTxt = `${fmtDelta(dServed)} (+${gained}/-${lost}) served`;
 
     line.innerHTML = `
       <div style="display:flex; justify-content:space-between; gap:10px; align-items:baseline;">
@@ -1200,16 +1227,20 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     // For each log key, keep a stable baseline so entries show net change from
     // the original state and disappear when they return to zero.
-    if (!window.__baseSvcStatsByKey) window.__baseSvcStatsByKey = {};
+    if (!window.__baseServedIdsByKey) window.__baseServedIdsByKey = {};
 
     renderStats(nextStats);
 
     if (reason) {
       const key = logKey || reason;
-      if (!window.__baseSvcStatsByKey[key]) {
-        window.__baseSvcStatsByKey[key] = window.__startingSvcStats || nextStats;
+      if (!window.__baseServedIdsByKey[key]) {
+        const baselineThreshold = (window.__startingSvcStats && isFinite(window.__startingSvcStats.thresholdM))
+          ? window.__startingSvcStats.thresholdM
+          : nextStats.thresholdM;
+        window.__baseServedIdsByKey[key] = getServedIdSet(baselineThreshold);
       }
-      appendLogLine(key, reason, window.__baseSvcStatsByKey[key], nextStats);
+      const delta = servedDeltaBreakdown(window.__baseServedIdsByKey[key], nextStats.thresholdM);
+      appendLogLine(key, reason, delta);
     }
 
     window.__lastSvcStats = nextStats;
