@@ -617,6 +617,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   // ---------- UI state ----------
   window.__gradMaxM = 400;
   window.__activeRouteFilter = new Set();
+  window.__showChangesOnly = false;
 
   // ---------- helpers ----------
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -847,12 +848,17 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         if (!marker) continue;
         const baseServed = !!a.baseServed;
         const currentServed = (a.distM != null && isFinite(a.distM) && a.distM <= maxM);
-        let c = '#9e9e9e';
-        if (!baseServed && currentServed) {
-          c = '#2e7d32'; // gained service
-        } else if (baseServed && !currentServed) {
-          c = '#c62828'; // lost service
+        let c = distToColorHex(a.distM, maxM);
+
+        if (window.__showChangesOnly) {
+          c = '#9e9e9e';
+          if (!baseServed && currentServed) {
+            c = '#2e7d32'; // gained service
+          } else if (baseServed && !currentServed) {
+            c = '#c62828'; // lost service
+          }
         }
+
         if (marker.setStyle) {
           marker.setStyle({ color: c, fillColor: c });
         }
@@ -866,7 +872,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         if (!poly) continue;
         const c = distToColorHex(r.dM, maxM);
         if (poly.setStyle) {
-          poly.setStyle({ color: c });
+          const nextOpacity = window.__showChangesOnly ? 0.0 : 0.75;
+          poly.setStyle({ color: c, opacity: nextOpacity });
         }
       }
     }
@@ -1233,6 +1240,10 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       <div style="margin-top:8px;">
         <input id="__gradMaxSlider" type="range" min="400" max="800" step="10" value="400" style="width:220px;" />
       </div>
+      <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+        <input id="__changesOnlyToggle" type="checkbox" />
+        <label for="__changesOnlyToggle" style="cursor:pointer;">Show only gained/lost changes</label>
+      </div>
       <div style="margin-top:6px; color:#555; opacity:0.85;">
         Drag bus stops to update nearest-stop distance for addresses.
       </div>
@@ -1241,6 +1252,16 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     document.body.appendChild(wrap);
 
     const slider = document.getElementById('__gradMaxSlider');
+    const changesOnlyToggle = document.getElementById('__changesOnlyToggle');
+
+    if (changesOnlyToggle) {
+      changesOnlyToggle.checked = !!window.__showChangesOnly;
+      changesOnlyToggle.addEventListener('change', function() {
+        window.__showChangesOnly = !!changesOnlyToggle.checked;
+        recolorAll(window.__gradMaxM);
+      });
+    }
+
     slider.addEventListener('input', function() {
       const v = parseFloat(slider.value);
       window.__gradMaxM = v;
