@@ -1190,6 +1190,127 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     updateLegendMax(window.__gradMaxM);
   }
 
+  function flattenLatLngs(latlngs, out) {
+    if (!Array.isArray(latlngs)) return;
+    for (const item of latlngs) {
+      if (!item) continue;
+      if (Array.isArray(item)) {
+        flattenLatLngs(item, out);
+      } else if (typeof item.lat === 'number' && typeof item.lng === 'number') {
+        out.push(item);
+      }
+    }
+  }
+
+  function buildRouteSnapIndex() {
+    const refs = Array.isArray(window.__routeShapeRefs) ? window.__routeShapeRefs : [];
+    const refMeta = Array.isArray(window.__routeShapeMeta) ? window.__routeShapeMeta : [];
+    const refToRouteId = new Map();
+    for (const meta of refMeta) {
+      if (!meta || !meta.refName) continue;
+      refToRouteId.set(String(meta.refName), String(meta.routeId || ''));
+    }
+
+    const segments = [];
+    const byRoute = new Map();
+    for (const refName of refs) {
+      const poly = getByName(refName);
+      if (!poly || !poly.getLatLngs) continue;
+
+      const routeId = refToRouteId.get(String(refName)) || '';
+      const pts = [];
+      flattenLatLngs(poly.getLatLngs(), pts);
+      if (pts.length < 2) continue;
+
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1];
+        const b = pts[i];
+        if (!a || !b) continue;
+        const seg = {
+          routeId: routeId,
+          aLat: a.lat,
+          aLon: a.lng,
+          bLat: b.lat,
+          bLon: b.lng,
+          midLat: 0.5 * (a.lat + b.lat),
+        };
+        segments.push(seg);
+        if (!byRoute.has(routeId)) byRoute.set(routeId, []);
+        byRoute.get(routeId).push(seg);
+      }
+    }
+
+    window.__routeSnapSegments = segments;
+    window.__routeSnapSegmentsByRoute = byRoute;
+  }
+
+  function nearestPointOnRouteLine(lat, lon, routeIds) {
+    const allSegs = Array.isArray(window.__routeSnapSegments) ? window.__routeSnapSegments : [];
+    const byRoute = window.__routeSnapSegmentsByRoute;
+
+    let candidateSegs = allSegs;
+    if (Array.isArray(routeIds) && routeIds.length && byRoute && byRoute.get) {
+      candidateSegs = [];
+      for (const rid of routeIds) {
+        const list = byRoute.get(String(rid));
+        if (Array.isArray(list) && list.length) candidateSegs.push(...list);
+      }
+      if (!candidateSegs.length) candidateSegs = allSegs;
+    }
+
+    if (!candidateSegs.length) return null;
+
+    let best = null;
+    let bestD2 = Infinity;
+
+    for (const seg of candidateSegs) {
+      const cosLat = Math.cos((seg.midLat || lat) * Math.PI / 180.0);
+      const ax = seg.aLon * cosLat;
+      const ay = seg.aLat;
+      const bx = seg.bLon * cosLat;
+      const by = seg.bLat;
+      const px = lon * cosLat;
+      const py = lat;
+
+      const vx = bx - ax;
+      const vy = by - ay;
+      const wx = px - ax;
+      const wy = py - ay;
+      const vv = vx * vx + vy * vy;
+      let t = 0;
+      if (vv > 0) t = clamp((wx * vx + wy * vy) / vv, 0.0, 1.0);
+
+      const projX = ax + t * vx;
+      const projY = ay + t * vy;
+      const dx = px - projX;
+      const dy = py - projY;
+      const d2 = dx * dx + dy * dy;
+
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        best = {
+          lat: projY,
+          lon: (Math.abs(cosLat) > 1e-9) ? (projX / cosLat) : lon,
+          routeId: seg.routeId || '',
+        };
+      }
+    }
+
+    return best;
+  }
+
+  function snapStopToRouteLine(stop) {
+    if (!stop) return null;
+    const snapped = nearestPointOnRouteLine(stop.lat, stop.lon, stop.routeIds || []);
+    if (!snapped) return null;
+    const movedM = haversineM(stop.lat, stop.lon, snapped.lat, snapped.lon);
+    stop.lat = snapped.lat;
+    stop.lon = snapped.lon;
+    if (!Array.isArray(stop.routeIds)) stop.routeIds = [];
+    if (snapped.routeId && !stop.routeIds.includes(snapped.routeId)) stop.routeIds.push(snapped.routeId);
+    return movedM;
+  }
+
   function installDraggableStops(map) {
     if (!window.__stopData || !Array.isArray(window.__stopData)) return;
 
@@ -1215,12 +1336,15 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       // Avoid duplicating
       if (window.__stopMarkers[sid]) return window.__stopMarkers[sid];
 
+      snapStopToRouteLine(s);
       const mk = L.marker([s.lat, s.lon], { draggable: true, icon: dot, title: s.name || sid }).addTo(map);
 
       mk.on('dragend', function(ev) {
         const ll = ev.target.getLatLng();
         s.lat = ll.lat;
         s.lon = ll.lng;
+        snapStopToRouteLine(s);
+        ev.target.setLatLng([s.lat, s.lon]);
         s.__moved = true;
         const label = (s.name || s.id || sid);
         recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive straight-line');
@@ -1253,8 +1377,10 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     for (const s of window.__stopData) addStopMarkerFor(s);
 
     // Expose helper so route-click can add stops later
-    window.__addStop = function(lat, lon, name) {
-      const s = { id: '', lat: lat, lon: lon, name: name || 'New stop', routeIds: Array.from(window.__activeRouteFilter || []), __moved: true };
+    window.__addStop = function(lat, lon, name, routeIdHint) {
+      const routeIds = routeIdHint ? [String(routeIdHint)] : Array.from(window.__activeRouteFilter || []);
+      const s = { id: '', lat: lat, lon: lon, name: name || 'New stop', routeIds: routeIds, __moved: true };
+      snapStopToRouteLine(s);
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
@@ -1264,10 +1390,17 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
   function installRouteClickToAddStop(map) {
     if (!window.__routeShapeRefs || !Array.isArray(window.__routeShapeRefs)) return;
+    const meta = Array.isArray(window.__routeShapeMeta) ? window.__routeShapeMeta : [];
+    const refToRouteId = new Map();
+    for (const m of meta) {
+      if (!m || !m.refName) continue;
+      refToRouteId.set(String(m.refName), String(m.routeId || ''));
+    }
 
     for (const refName of window.__routeShapeRefs) {
       const poly = getByName(refName);
       if (!poly || !poly.on) continue;
+      const routeId = refToRouteId.get(String(refName)) || '';
 
       poly.on('click', function(ev) {
         try {
@@ -1279,7 +1412,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
           if (!trimmed) return;
 
           if (window.__addStop) {
-            window.__addStop(ll.lat, ll.lng, trimmed);
+            window.__addStop(ll.lat, ll.lng, trimmed, routeId);
           }
         } catch (e) {
           console.error(e);
@@ -1303,6 +1436,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       // initial stats (no log entry)
       updateSummary(null);
       // add draggable stop overlays
+      buildRouteSnapIndex();
       installDraggableStops(map);
       installRouteClickToAddStop(map);
     } catch (e) {
@@ -1639,6 +1773,7 @@ def main() -> None:
     fg_routes = folium.FeatureGroup(name="Bus routes", show=True)
     fg_route_dist_labels = folium.FeatureGroup(name="Route segment distances", show=True)
     route_shape_refs: List[str] = []
+    route_shape_meta: List[dict] = []
     routes_idx = routes.set_index("route_id", drop=False) if "route_id" in routes.columns else None
 
     available_route_ids_in_bounds: Set[str] = set()
@@ -1694,7 +1829,9 @@ def main() -> None:
                 color=color,
             )
             poly_route.add_to(fg_routes)
-            route_shape_refs.append(poly_route.get_name())
+            ref_name = poly_route.get_name()
+            route_shape_refs.append(ref_name)
+            route_shape_meta.append({"refName": ref_name, "routeId": str(route_id)})
 
         for seg in route_segment_labels.get(str(route_id), []):
             seg_text = str(seg.get("text", "")).strip()
@@ -1718,6 +1855,7 @@ def main() -> None:
 
     # Expose route polylines to JS so we can click to add a new stop
     m.get_root().html.add_child(Element(f"<script>window.__routeShapeRefs = {json.dumps(route_shape_refs)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeShapeMeta = {json.dumps(route_shape_meta)};</script>"))
 
     # --- layer: stops (static circles) ---
     fg_stops = folium.FeatureGroup(name="Bus stops", show=True)
