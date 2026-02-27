@@ -42,6 +42,7 @@ import os
 import re
 import subprocess
 import sys
+import csv
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 import json
@@ -55,6 +56,21 @@ from shapely.geometry import LineString, Point, shape
 from pyproj import Transformer
 from scipy.spatial import cKDTree
 from folium import Element
+
+
+SUMMARY_HEADERS = [
+    "output_file",
+    "ward",
+    "addresses",
+    "stops",
+    "routes",
+    "addresses_per_stop",
+    "addresses_per_route",
+    "roads_graph_nodes",
+    "roads_graph_edges",
+    "tracks_loaded",
+    "bbox",
+]
 
 
 # ----------------------------
@@ -2357,6 +2373,11 @@ def main() -> None:
         default=2,
         help="Max nearby track neighbours to connect per track node (limits graph blow-up)",
     )
+    ap.add_argument(
+        "--summary-no-header",
+        action="store_true",
+        help="Skip printing the CSV header row.",
+    )
 
     args = ap.parse_args()
 
@@ -2371,7 +2392,8 @@ def main() -> None:
         skip_ward_names = {"banks peninsula"}
         wards_to_generate = [name for name in ward_names if name.strip().lower() not in skip_ward_names]
 
-        print(f"Generating {len(wards_to_generate)} ward maps into: {args.all_wards_out_dir}")
+        if not args.summary_no_header:
+            csv.writer(sys.stdout, lineterminator="\n").writerow(SUMMARY_HEADERS)
         for ward_name in wards_to_generate:
             out_file = os.path.join(args.all_wards_out_dir, ward_name_to_filename(ward_name))
             cmd = [
@@ -2408,8 +2430,7 @@ def main() -> None:
                 cmd.extend(["--routes", args.routes])
             if args.draw_all_route_shapes:
                 cmd.append("--draw-all-route-shapes")
-
-            print(f"\n[{ward_name}] -> {out_file}")
+            cmd.append("--summary-no-header")
             subprocess.run(cmd, check=True)
         return
 
@@ -2944,14 +2965,25 @@ def main() -> None:
 
     m.save(args.out)
 
-    print(f"Wrote: {args.out}")
-    print(
-        f"Addresses: {len(addr):,} | Stops: {len(stops):,} | Roads graph nodes: {len(g.nodes):,} edges: {len(g.edges):,} | Tracks loaded: {len(track_lines):,}"
-    )
-    if bbox:
-        print(f"BBox: {bbox}")
-    if args.ward:
-        print(f"Ward: {args.ward}")
+    route_count = int(routes["route_id"].astype(str).nunique()) if "route_id" in routes.columns else 0
+    summary_row = [
+        args.out,
+        args.ward or "",
+        len(addr),
+        len(stops),
+        route_count,
+        f"{len(addr)}/{len(stops)}" if len(stops) else "",
+        f"{len(addr)}/{route_count}" if route_count else "",
+        len(g.nodes),
+        len(g.edges),
+        len(track_lines),
+        str(bbox) if bbox else "",
+    ]
+
+    writer = csv.writer(sys.stdout, lineterminator="\n")
+    if not args.summary_no_header:
+        writer.writerow(SUMMARY_HEADERS)
+    writer.writerow(summary_row)
 
 
 if __name__ == "__main__":
