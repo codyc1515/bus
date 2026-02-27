@@ -696,9 +696,22 @@ def linestring_sample_points_latlon(
     return [[float(lat), float(lon)] for lon, lat in dense]
 
 
-def compact_json(data) -> str:
+def quantize_json_numbers(data, precision: Optional[int]):
+    """Round floats recursively before JSON serialization to reduce payload size."""
+    if precision is None:
+        return data
+    if isinstance(data, dict):
+        return {k: quantize_json_numbers(v, precision) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [quantize_json_numbers(v, precision) for v in data]
+    if isinstance(data, (float, np.floating)):
+        return round(float(data), precision)
+    return data
+
+
+def compact_json(data, precision: Optional[int] = None) -> str:
     """Serialize JSON with minimal whitespace for smaller HTML output."""
-    return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(quantize_json_numbers(data, precision), separators=(",", ":"), ensure_ascii=False)
 
 
 def simplify_linestring_for_draw(
@@ -937,12 +950,19 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   // ---------- global registries populated by Python ----------
   // window.__stopData = [{id, lat, lon, name, routeIds}]
   // window.__routeOptions = [{id, label}]
-  // window.__addrData = [{id, lat, lon, markerName, basePopupHtml, markerRefName, distM}]
-  // window.__roadData = [{polyRefName, dM, samples}]
-  // window.__trackData = [{polyRefName, dM, samples}]
+  // window.__addrData = [{id, lat, lon, tooltip, basePopupHtml, distM}]
+  // window.__roadData = [{locations, tip, weight, opacity, dM, samples}]
+  // window.__trackData = [{locations, tip, weight, opacity, dM, samples}]
 
   function getByName(name) {
     try { return window[name]; } catch { return null; }
+  }
+
+  function getLayerRef(item, nameField) {
+    if (!item) return null;
+    if (item.layerRef) return item.layerRef;
+    if (nameField && item[nameField]) return getByName(item[nameField]);
+    return null;
   }
 
   function updateLegendMax(maxM) {
@@ -1269,7 +1289,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     // Addresses
     if (window.__addrData) {
       for (const a of window.__addrData) {
-        const marker = getByName(a.markerRefName);
+        const marker = getLayerRef(a, 'markerRefName');
         if (!marker) continue;
         const baseServed = !!a.baseServed;
         const currentServed = (a.distM != null && isFinite(a.distM) && a.distM <= maxM);
@@ -1298,7 +1318,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     if (window.__roadData) {
       const stopHighlightActive = !!window.__activeStopHighlight;
       for (const r of window.__roadData) {
-        const poly = getByName(r.polyRefName);
+        const poly = getLayerRef(r, 'polyRefName');
         if (!poly) continue;
         const c = distToColorHex(r.dM, maxM);
         if (poly.setStyle) {
@@ -1332,7 +1352,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     if (window.__trackData) {
       const stopHighlightActive = !!window.__activeStopHighlight;
       for (const t of window.__trackData) {
-        const poly = getByName(t.polyRefName);
+        const poly = getLayerRef(t, 'polyRefName');
         if (!poly) continue;
         const c = distToColorHex(t.dM, maxM);
         if (poly.setStyle) {
@@ -1450,7 +1470,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const idTxt = String(a.id).trim();
       if (idTxt !== '' && idTxt.toLowerCase() !== 'nan') return `id:${idTxt}`;
     }
-    if (a && a.markerRefName) return `marker:${String(a.markerRefName)}`;
     if (a && isFinite(a.lat) && isFinite(a.lon)) return `coord:${a.lat},${a.lon}`;
     return `idx:${idx}`;
   }
@@ -1574,7 +1593,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   function updateAddressPopups() {
     if (!window.__addrData) return;
     for (const a of window.__addrData) {
-      const marker = getByName(a.markerRefName);
+      const marker = getLayerRef(a, 'markerRefName');
       if (!marker) continue;
       // Replace only the fields we control. Keep the rest of the HTML.
       const dTxt = (a.distM == null) ? 'N/A' : `${Math.round(a.distM).toLocaleString()} m`;
@@ -2174,6 +2193,72 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
   }
 
+
+  function installClientLayers(map) {
+    if (!map) return;
+
+    window.__roadLayerGroup = L.featureGroup().addTo(map);
+    window.__trackLayerGroup = L.featureGroup().addTo(map);
+    window.__addrLayerGroup = L.featureGroup().addTo(map);
+
+    if (Array.isArray(window.__roadData)) {
+      for (const r of window.__roadData) {
+        const poly = L.polyline(r.locations || [], {
+          pane: 'roadsPane',
+          weight: isFinite(r.weight) ? r.weight : 3.0,
+          opacity: isFinite(r.opacity) ? r.opacity : 0.75,
+          color: '#ff0000',
+          smoothFactor: 1.5,
+        });
+        if (r.tip) poly.bindTooltip(String(r.tip));
+        poly.addTo(window.__roadLayerGroup);
+        r.layerRef = poly;
+      }
+    }
+
+    if (Array.isArray(window.__trackData)) {
+      for (const t of window.__trackData) {
+        const poly = L.polyline(t.locations || [], {
+          pane: 'roadsPane',
+          weight: isFinite(t.weight) ? t.weight : 2.5,
+          opacity: isFinite(t.opacity) ? t.opacity : 0.8,
+          color: '#ff0000',
+          smoothFactor: 1.5,
+        });
+        if (t.tip) poly.bindTooltip(String(t.tip));
+        poly.addTo(window.__trackLayerGroup);
+        t.layerRef = poly;
+      }
+    }
+
+    if (Array.isArray(window.__addrData)) {
+      for (const a of window.__addrData) {
+        const c = L.circleMarker([a.lat, a.lon], {
+          radius: 3,
+          weight: 2,
+          color: '#9e9e9e',
+          fillColor: '#9e9e9e',
+          fillOpacity: 0.95,
+          opacity: 1.0,
+          pane: 'stopsPane',
+        });
+        if (a.tooltip) c.bindTooltip(String(a.tooltip));
+        if (a.basePopupHtml) {
+          const html = a.basePopupHtml
+            .replace('__NEAREST__', a.nearestStopName || '(calculating…)')
+            .replace('__DIST__', '(calculating…)')
+            .replace('__METHOD__', a.methodology || 'roads + tracks');
+          c.bindPopup(html, { maxWidth: 360 });
+        }
+        c.on('click', function() {
+          if (window.__showRoute) window.__showRoute(map, a.id);
+        });
+        c.addTo(window.__addrLayerGroup);
+        a.layerRef = c;
+      }
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function() {
     try {
       const mapName = window.__foliumMapName;
@@ -2181,6 +2266,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       if (!map) return;
 
       installSlider(map);
+      installClientLayers(map);
       ensureStatsPanel();
       installTopRightRouteFilterControl(map);
       installRouteFilter();
@@ -2554,7 +2640,7 @@ def main() -> None:
     ]
     m.get_root().html.add_child(
         Element(
-            f"<script>window.__graphData = {compact_json({'nodes': graph_nodes_js, 'edges': graph_edges_js})};</script>"
+            f"<script>window.__graphData = {compact_json({'nodes': graph_nodes_js, 'edges': graph_edges_js}, precision=max(0, int(args.graph_precision)))};</script>"
         )
     )
 
@@ -2685,7 +2771,7 @@ def main() -> None:
 
     # Expose route polylines to JS so we can click to add a new stop
     m.get_root().html.add_child(Element(f"<script>window.__routeShapeRefs = {compact_json(route_shape_refs)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeShapeMeta = {compact_json(route_shape_meta)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeShapeMeta = {compact_json(route_shape_meta, precision=max(0, int(args.graph_precision)))};</script>"))
 
     # --- stops data for draggable JS overlay (no static stop markers) ---
     stop_js_data: List[dict] = []
@@ -2713,12 +2799,11 @@ def main() -> None:
         })
 
     # Expose stops to JS for draggable overlay
-    m.get_root().html.add_child(Element(f"<script>window.__stopData = {compact_json(stop_js_data)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeOptions = {compact_json(route_options_js)};</script>"))
-    m.get_root().html.add_child(Element(f"<script>window.__routeValueToIds = {compact_json(route_value_to_ids_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__stopData = {compact_json(stop_js_data, precision=max(0, int(args.graph_precision)))};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeOptions = {compact_json(route_options_js, precision=max(0, int(args.graph_precision)))};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__routeValueToIds = {compact_json(route_value_to_ids_js, precision=max(0, int(args.graph_precision)))};</script>"))
 
-    # --- layer: roads (visual + coloured by nearest stop distance) ---
-    fg_roads = folium.FeatureGroup(name="Roads (distance to stop)", show=True)
+    # --- layer: roads/tracks/addresses rendered client-side for smaller HTML ---
     display_roads = roads.head(min(len(roads), int(args.display_road_limit)))
 
     road_js: List[dict] = []
@@ -2764,26 +2849,15 @@ def main() -> None:
                 continue
 
             d_m = None
-
-            color = dist_to_green_red_hex(d_m, max_m=float(args.color_max_m))
             d_label = "N/A" if d_m is None else f"{d_m:,.0f} m"
             tip = road_name if road_name else "(road)"
             tip = f"{tip} — nearest stop: {d_label}"
 
-            poly = folium.PolyLine(
-                locations=[(y, x) for (x, y) in coords],
-                pane="roadsPane",
-                weight=float(args.road_draw_weight),
-                opacity=0.75,
-                color=color,
-                smooth_factor=1.5,
-                tooltip=tip,
-            )
-            poly.add_to(fg_roads)
-
-            # store poly reference + distance so the slider can recolour
             road_js.append({
-                "polyRefName": poly.get_name(),
+                "locations": [[float(y), float(x)] for (x, y) in coords],
+                "tip": tip,
+                "weight": float(args.road_draw_weight),
+                "opacity": 0.75,
                 "dM": float(d_m) if d_m is not None else None,
                 "samples": linestring_sample_points_latlon(
                     ls,
@@ -2793,13 +2867,9 @@ def main() -> None:
                 ),
             })
 
-    fg_roads.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__roadData = {compact_json(road_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__roadData = {compact_json(road_js, precision=max(0, int(args.graph_precision)))};</script>"))
 
-    # --- layer: tracks (visual + coloured by nearest stop distance) ---
-    fg_tracks = folium.FeatureGroup(name="Tracks (distance to stop)", show=True)
     track_js: List[dict] = []
-
     for ls_raw, track_name in track_lines:
         ls = simplify_linestring_for_draw(ls_raw, float(args.draw_simplify_m))
         coords = list(ls.coords)
@@ -2811,24 +2881,14 @@ def main() -> None:
             continue
 
         d_m = None
-
-        color = dist_to_green_red_hex(d_m, max_m=float(args.color_max_m))
         d_label = "N/A" if d_m is None else f"{d_m:,.0f} m"
         tip = f"{track_name} — nearest stop: {d_label}"
 
-        poly = folium.PolyLine(
-            locations=[(y, x) for (x, y) in coords],
-            pane="roadsPane",
-            weight=max(2.0, float(args.road_draw_weight) - 0.5),
-            opacity=0.8,
-            color=color,
-            smooth_factor=1.5,
-            tooltip=tip,
-        )
-        poly.add_to(fg_tracks)
-
         track_js.append({
-            "polyRefName": poly.get_name(),
+            "locations": [[float(y), float(x)] for (x, y) in coords],
+            "tip": tip,
+            "weight": max(2.0, float(args.road_draw_weight) - 0.5),
+            "opacity": 0.8,
             "dM": float(d_m) if d_m is not None else None,
             "samples": linestring_sample_points_latlon(
                 ls,
@@ -2838,15 +2898,9 @@ def main() -> None:
             ),
         })
 
-    fg_tracks.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__trackData = {compact_json(track_js)};</script>"))
+    m.get_root().html.add_child(Element(f"<script>window.__trackData = {compact_json(track_js, precision=max(0, int(args.graph_precision)))};</script>"))
 
-    # --- layer: addresses with nearest-stop distance ---
-    fg_addr = folium.FeatureGroup(name="Addresses", show=True)
-
-    bind_js: List[str] = []
     addr_js: List[dict] = []
-
     for _, a in addr.iterrows():
         lon = float(a["lon"])
         lat = float(a["lat"])
@@ -2854,91 +2908,35 @@ def main() -> None:
         addr_id = str(a.get("address_id", "")).strip()
 
         nearest_stop_txt = "(calculating…)"
-        dist_txt = "(calculating…)"
         method_txt = "roads + tracks"
-        roadseg_txt = "(interactive)"
 
-        route_coords: Optional[List[Tuple[float, float]]] = None
-        dist_for_colour_m: Optional[float] = None
-
-        # Register route in JS store (only for this address)
-        if route_coords is not None and addr_id:
-            route_json = compact_json([[float(lat), float(lon)] for (lat, lon) in route_coords])
-            m.get_root().html.add_child(
-                Element(f"<script>window.__routeStore[{compact_json(addr_id)}] = {route_json};</script>")
-            )
-
-        marker_color = "#9e9e9e"
-
-        # base popup with placeholders for client-side update
         popup_html_base = f"""
-        <div style=\"font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size: 13px;\">
-          <div style=\"font-weight: 700; margin-bottom: 6px;\">{full_addr or "(address)"}</div>
+        <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size: 13px;">
+          <div style="font-weight: 700; margin-bottom: 6px;">{full_addr or "(address)"}</div>
           <div><b>Address ID:</b> {addr_id}</div>
           <div><b>Nearest stop:</b> __NEAREST__</div>
           <div><b>Approx distance:</b> __DIST__</div>
           <div><b>Method:</b> __METHOD__</div>
-          <div><b>Road segments:</b> {roadseg_txt}</div>
-          <div style=\"opacity: 0.7; margin-top: 6px;\">Click marker to highlight the computed path.</div>
+          <div><b>Road segments:</b> (interactive)</div>
+          <div style="opacity: 0.7; margin-top: 6px;">Click marker to highlight the computed path.</div>
         </div>
         """.strip()
 
-        # initial (server-side) content
-        popup_html_initial = (
-            popup_html_base
-            .replace("__NEAREST__", nearest_stop_txt)
-            .replace("__DIST__", dist_txt)
-            .replace("__METHOD__", method_txt)
-        )
-
-        marker = folium.CircleMarker(
-            location=[lat, lon],
-            radius=3,
-            weight=2,
-            color=marker_color,
-            fill=True,
-            fill_color=marker_color,
-            fill_opacity=0.95,
-            tooltip=full_addr if full_addr else None,
-            popup=folium.Popup(popup_html_initial, max_width=360),
-        )
-        marker.add_to(fg_addr)
-
-        if addr_id:
-            bind_js.append(
-                f"{marker.get_name()}.on('click', function() {{ window.__showRoute({m.get_name()}, {addr_id!r}); }});"
-            )
-
-        # expose marker + base popup + current distance for JS recolouring / recalculation
         addr_js.append(
             {
                 "id": addr_id,
                 "lat": float(lat),
                 "lon": float(lon),
-                "markerRefName": marker.get_name(),
+                "tooltip": full_addr if full_addr else None,
                 "basePopupHtml": popup_html_base,
                 "nearestStopName": nearest_stop_txt,
-                "distM": float(dist_for_colour_m) if dist_for_colour_m is not None else None,
+                "distM": None,
                 "baseServed": False,
                 "methodology": method_txt,
             }
         )
 
-    fg_addr.add_to(m)
-    m.get_root().html.add_child(Element(f"<script>window.__addrData = {compact_json(addr_js)};</script>"))
-
-    # Emit the click bindings in one place (ensures marker JS variables exist)
-    if bind_js:
-        bindings_code = "".join(bind_js)
-        script_block = f"""
-    <script>
-    document.addEventListener('DOMContentLoaded', function() {{
-    {bindings_code}
-    }});
-    </script>
-    """
-        m.get_root().html.add_child(Element(script_block))
-
+    m.get_root().html.add_child(Element(f"<script>window.__addrData = {compact_json(addr_js, precision=max(0, int(args.graph_precision)))};</script>"))
     # Inject slider + draggable stop overlays + live recolour/recalc
     m.get_root().html.add_child(Element(f"<script>window.__gradMaxM = {float(args.color_max_m)};</script>"))
     add_ui_and_interaction_js(m)
