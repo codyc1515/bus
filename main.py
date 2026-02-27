@@ -9,8 +9,6 @@ Build a standalone HTML map showing:
 Click an address marker:
 - Popup shows nearest stop + distance in metres.
 - Distance is computed via road-network shortest path where possible.
-- Applies a configurable deduction (e.g. 20 m) per distinct road-name run traversed
-  to approximate off-road/footpath shortcuts.
 - Highlights the route taken on the map.
 
 NEW:
@@ -702,7 +700,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     window.__lastSvcStats = nextStats;
   }
 
-  function updateAddressPopupsInteractive() {
+  function updateAddressPopups() {
     if (!window.__addrData) return;
     for (const a of window.__addrData) {
       const marker = getByName(a.markerRefName);
@@ -710,10 +708,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       // Replace only the fields we control. Keep the rest of the HTML.
       const dTxt = (a.distM == null) ? 'N/A' : `${Math.round(a.distM).toLocaleString()} m`;
       const nTxt = a.nearestStopName || 'N/A';
+      const methodTxt = a.methodology || 'N/A';
       const html = a.basePopupHtml
         .replace('__NEAREST__', nTxt)
         .replace('__DIST__', dTxt)
-        .replace('__METHOD__', 'interactive (straight-line)');
+        .replace('__METHOD__', methodTxt);
 
       if (marker.getPopup && marker.getPopup()) {
         marker.getPopup().setContent(html);
@@ -721,7 +720,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
   }
 
-  function recalcAddressesFromStops(reason, logKey) {
+  function recalcAddressesFromStops(reason, logKey, methodOverride) {
     if (!window.__stopData || !window.__addrData) return;
 
     const grid = buildStopGrid(window.__stopData);
@@ -730,6 +729,9 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const res = nearestStop(grid, a.lat, a.lon, 12, window.__activeRouteFilter);
       a.distM = res.distM;
       a.nearestStopName = (res.stop && res.stop.name) ? res.stop.name : 'N/A';
+      if (methodOverride !== undefined && methodOverride !== null) {
+        a.methodology = methodOverride;
+      }
 
       // Update highlight route to point at the NEW nearest stop position.
       // We only have straight-line client-side, so set route to [address, stop].
@@ -739,7 +741,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
 
     recolorAll(window.__gradMaxM);
-    updateAddressPopupsInteractive();
+    updateAddressPopups();
     updateSummary(reason || 'bus stop moved', logKey || 'stop:unknown');
   }
 
@@ -763,7 +765,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     sel.addEventListener('change', function() {
       const picked = Array.from(sel.selectedOptions).map(o => String(o.value));
       window.__activeRouteFilter = new Set(picked);
-      recalcAddressesFromStops(`route filter changed (${picked.length} selected)`, 'route-filter');
+      recalcAddressesFromStops(`route filter changed (${picked.length} selected)`, 'route-filter', null);
     });
   }
 
@@ -852,7 +854,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         s.lat = ll.lat;
         s.lon = ll.lng;
         const label = (s.name || s.id || sid);
-        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`);
+        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive (straight-line)');
       });
 
       // Right click to remove
@@ -871,7 +873,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         delete window.__stopMarkers[sid];
 
         // Update distances + stats/log
-        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`);
+        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive (straight-line)');
       });
 
       window.__stopMarkers[sid] = mk;
@@ -887,7 +889,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
-      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`);
+      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive (straight-line)');
     };
   }
 
@@ -975,8 +977,6 @@ def main() -> None:
     ap.add_argument("--max-stops", type=int, default=20000, help="Max stops to plot")
 
     ap.add_argument("--densify-m", type=float, default=10.0, help="Densify road segments to this spacing (m). Lower = better snapping, heavier graph")
-    ap.add_argument("--deduct-per-road-m", type=float, default=20.0, help="Deduct this many metres per distinct road-name run traversed")
-
     ap.add_argument("--display-road-limit", type=int, default=20000, help="How many road features to draw (visual only). Graph building uses --max-roads")
     ap.add_argument("--draw-all-route-shapes", action="store_true", help="Draw all shapes per route (can be heavy). Default limits to 5 per route")
 
@@ -1403,9 +1403,6 @@ def main() -> None:
 
                     network_m = float(core_m + snapA + snapS)
 
-                    if road_segs is not None and road_segs > 0 and args.deduct_per_road_m > 0:
-                        network_m -= float(args.deduct_per_road_m) * float(road_segs)
-
                     network_m = max(network_m, direct_m, 0.0)
 
                     coords2: List[Tuple[float, float]] = [(lat, lon)]
@@ -1427,7 +1424,7 @@ def main() -> None:
                 roadseg_txt = "—"
                 route_coords = [(lat, lon), (stop_lat, stop_lon)]
             else:
-                method_txt = "roads (deducted)"
+                method_txt = "roads"
                 roadseg_txt = str(road_segs) if road_segs is not None else "?"
 
             dist_txt = f"{network_m:,.0f} m"
@@ -1491,6 +1488,7 @@ def main() -> None:
                 "basePopupHtml": popup_html_base,
                 "nearestStopName": nearest_stop_txt,
                 "distM": float(dist_for_colour_m) if dist_for_colour_m is not None else None,
+                "methodology": method_txt,
             }
         )
 
