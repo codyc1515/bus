@@ -1216,12 +1216,23 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return (n > 0 ? `+${n}` : `${n}`);
   }
 
+  function addressKey(a, idx) {
+    if (a && a.id != null) {
+      const idTxt = String(a.id).trim();
+      if (idTxt !== '' && idTxt.toLowerCase() !== 'nan') return `id:${idTxt}`;
+    }
+    if (a && a.markerRefName) return `marker:${String(a.markerRefName)}`;
+    if (a && isFinite(a.lat) && isFinite(a.lon)) return `coord:${a.lat},${a.lon}`;
+    return `idx:${idx}`;
+  }
+
   function getServedIdSet(thresholdM) {
     const ids = new Set();
     if (!window.__addrData) return ids;
-    for (const a of window.__addrData) {
+    for (let i = 0; i < window.__addrData.length; i++) {
+      const a = window.__addrData[i];
       if (a.distM != null && isFinite(a.distM) && a.distM <= thresholdM) {
-        ids.add(a.id);
+        ids.add(addressKey(a, i));
       }
     }
     return ids;
