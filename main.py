@@ -8,17 +8,15 @@ Build a standalone HTML map showing:
 
 Click an address marker:
 - Popup shows nearest stop + distance in metres.
-- Distance is computed via road-network shortest path where possible.
+- Distances are computed in-browser using roads + tracks routing.
 - Highlights the route taken on the map.
 
 NEW:
 - Roads are drawn thicker and coloured green→red by distance to nearest stop.
 - Address markers are coloured the same way.
 - UI slider lets you change the colour-scale max from 400→800m (live recolour).
-- Bus stops are draggable: on drag-end, the nearest-stop distance for EACH address
-  is recalculated in the browser using a straight-line fallback only when
-  network routing is unavailable client-side, and colours + popups update.
-  (Routing via the road graph is still computed server-side at build time.)
+- Bus stops are draggable: on drag-end, nearest-stop distances are recalculated
+  in the browser via the routable graph for consistency.
 
 Dependencies:
   pip install pandas numpy shapely pyproj folium networkx scipy
@@ -58,17 +56,6 @@ from folium import Element
 # ----------------------------
 # Geometry / distance helpers
 # ----------------------------
-
-def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in metres."""
-    R = 6371000.0
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
-
 
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
@@ -593,36 +580,6 @@ def shortest_path_details(
     return float(dist), node_path, int(segs), uses_track
 
 
-def linestring_min_stop_distance_m(
-    ls: LineString,
-    stop_kd: Optional[cKDTree],
-    stop_latlons: np.ndarray,
-    tf_to_m: Transformer,
-    sample_every_m: float = 25.0,
-) -> Optional[float]:
-    """Approx min straight-line distance from a road geometry to nearest stop."""
-    if stop_kd is None or stop_latlons.size == 0:
-        return None
-
-    dense = densify_linestring(ls, max_segment_m=sample_every_m, tf_to_m=tf_to_m)
-    if len(dense) == 0:
-        return None
-
-    best = None
-    for lon, lat in dense:
-        _, idx = stop_kd.query([float(lat), float(lon)], k=1)
-        idx = int(idx)
-        s_lat = float(stop_latlons[idx, 0])
-        s_lon = float(stop_latlons[idx, 1])
-        d = haversine_m(float(lat), float(lon), s_lat, s_lon)
-        if best is None or d < best:
-            best = d
-            if best <= 1.0:
-                break
-
-    return float(best) if best is not None else None
-
-
 def linestring_sample_points_latlon(
     ls: LineString,
     tf_to_m: Transformer,
@@ -667,8 +624,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return 2 * R * Math.asin(Math.sqrt(a));
   }
 
-  // ---------- simple grid index for stops ----------
-  // We build a grid to avoid O(addresses*stops) scans.
+  // ---------- simple grid index ----------
   // Cell size in degrees (roughly ~200m lat-wise)
   const CELL = 0.002;
 
@@ -678,64 +634,150 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return `${i},${j}`;
   }
 
-  function buildStopGrid(stopsArr) {
-    const grid = new Map();
-    for (const s of stopsArr) {
-      const k = keyFor(s.lat, s.lon);
-      if (!grid.has(k)) grid.set(k, []);
-      grid.get(k).push(s);
+  function stopAllowedByFilter(s) {
+    if (!window.__activeRouteFilter || window.__activeRouteFilter.size === 0) return true;
+    const routeIds = Array.isArray(s.routeIds) ? s.routeIds : [];
+    for (const rid of routeIds) {
+      if (window.__activeRouteFilter.has(String(rid))) return true;
     }
-    return grid;
+    return false;
   }
 
-  function nearestStop(stopsGrid, lat, lon, maxRing, activeRouteFilter) {
-    // Expand rings of cells until we find at least one candidate, then
-    // keep expanding a bit to be safe.
+  function ensureGraphRuntime() {
+    if (window.__graphRt) return window.__graphRt;
+    const gd = window.__graphData;
+    if (!gd || !Array.isArray(gd.nodes) || !Array.isArray(gd.edges)) return null;
+    const n = gd.nodes.length;
+    const adj = Array.from({ length: n }, () => []);
+    for (const e of gd.edges) {
+      if (!Array.isArray(e) || e.length < 3) continue;
+      const u = e[0] | 0;
+      const v = e[1] | 0;
+      const w = +e[2];
+      if (!isFinite(w)) continue;
+      if (u < 0 || u >= n || v < 0 || v >= n) continue;
+      adj[u].push([v, w]);
+      adj[v].push([u, w]);
+    }
+    const grid = new Map();
+    for (let i = 0; i < n; i++) {
+      const nd = gd.nodes[i];
+      const k = keyFor(nd[0], nd[1]);
+      if (!grid.has(k)) grid.set(k, []);
+      grid.get(k).push(i);
+    }
+    window.__graphRt = { nodes: gd.nodes, adj, grid };
+    return window.__graphRt;
+  }
+
+  function nearestGraphNode(lat, lon) {
+    const rt = ensureGraphRuntime();
+    if (!rt || !rt.nodes.length) return { idx: null, snapM: null };
     const ci = Math.floor(lat / CELL);
     const cj = Math.floor(lon / CELL);
-
-    let best = null;
+    let bestIdx = null;
     let bestD = Infinity;
-
-    function consider(list) {
-      for (const s of list) {
-        if (activeRouteFilter && activeRouteFilter.size > 0) {
-          const routeIds = Array.isArray(s.routeIds) ? s.routeIds : [];
-          let matches = false;
-          for (const rid of routeIds) {
-            if (activeRouteFilter.has(String(rid))) { matches = true; break; }
-          }
-          if (!matches) continue;
-        }
-        const d = haversineM(lat, lon, s.lat, s.lon);
-        if (d < bestD) { bestD = d; best = s; }
-      }
-    }
-
-    let foundAny = false;
-    for (let ring = 0; ring <= maxRing; ring++) {
+    for (let ring = 0; ring <= 15; ring++) {
+      let found = false;
       for (let di = -ring; di <= ring; di++) {
         for (let dj = -ring; dj <= ring; dj++) {
-          // only border cells of this ring
           if (Math.abs(di) !== ring && Math.abs(dj) !== ring) continue;
-          const k = `${ci + di},${cj + dj}`;
-          const list = stopsGrid.get(k);
-          if (list && list.length) {
-            foundAny = true;
-            consider(list);
+          const list = rt.grid.get(`${ci + di},${cj + dj}`);
+          if (!list) continue;
+          found = true;
+          for (const idx of list) {
+            const nd = rt.nodes[idx];
+            const d = haversineM(lat, lon, nd[0], nd[1]);
+            if (d < bestD) { bestD = d; bestIdx = idx; }
           }
         }
       }
-      // once we found candidates, we can stop after a couple more rings
-      if (foundAny && ring >= 2) break;
+      if (found && ring >= 1) break;
+    }
+    if (bestIdx == null) {
+      for (let i = 0; i < rt.nodes.length; i++) {
+        const nd = rt.nodes[i];
+        const d = haversineM(lat, lon, nd[0], nd[1]);
+        if (d < bestD) { bestD = d; bestIdx = i; }
+      }
+    }
+    return { idx: bestIdx, snapM: isFinite(bestD) ? bestD : null };
+  }
+
+  function recomputeStopField() {
+    const rt = ensureGraphRuntime();
+    if (!rt || !window.__stopData) return null;
+    const n = rt.nodes.length;
+    const dist = new Array(n).fill(Infinity);
+    const parent = new Array(n).fill(-1);
+    const sourceStopIdx = new Array(n).fill(-1);
+    const heap = [];
+
+    function push(item) {
+      heap.push(item);
+      let i = heap.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heap[p][0] <= heap[i][0]) break;
+        [heap[p], heap[i]] = [heap[i], heap[p]];
+        i = p;
+      }
+    }
+    function pop() {
+      if (!heap.length) return null;
+      const out = heap[0];
+      const last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        let i = 0;
+        while (true) {
+          const l = i * 2 + 1;
+          const r = l + 1;
+          let m = i;
+          if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+          if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+          if (m === i) break;
+          [heap[m], heap[i]] = [heap[i], heap[m]];
+          i = m;
+        }
+      }
+      return out;
     }
 
-    if (!best) {
-      // fallback: brute force if grid is weird
-      for (const [_, list] of stopsGrid.entries()) consider(list);
+    for (let si = 0; si < window.__stopData.length; si++) {
+      const s = window.__stopData[si];
+      if (!stopAllowedByFilter(s)) continue;
+      const snap = nearestGraphNode(s.lat, s.lon);
+      if (snap.idx == null || snap.snapM == null) continue;
+      s.__snapNode = snap.idx;
+      s.__snapM = snap.snapM;
+      if (snap.snapM < dist[snap.idx]) {
+        dist[snap.idx] = snap.snapM;
+        sourceStopIdx[snap.idx] = si;
+        parent[snap.idx] = -1;
+        push([snap.snapM, snap.idx]);
+      }
     }
 
-    return { stop: best, distM: isFinite(bestD) ? bestD : null };
+    while (heap.length) {
+      const item = pop();
+      if (!item) break;
+      const d = item[0];
+      const u = item[1];
+      if (d !== dist[u]) continue;
+      for (const [v, w] of rt.adj[u]) {
+        const nd = d + w;
+        if (nd < dist[v]) {
+          dist[v] = nd;
+          parent[v] = u;
+          sourceStopIdx[v] = sourceStopIdx[u];
+          push([nd, v]);
+        }
+      }
+    }
+
+    window.__stopField = { dist, parent, sourceStopIdx };
+    return window.__stopField;
   }
 
   // ---------- global registries populated by Python ----------
@@ -756,7 +798,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
   function recalcLineDistancesFromStops(lineData) {
     if (!lineData || !window.__stopData || !Array.isArray(window.__stopData)) return;
-    const grid = buildStopGrid(window.__stopData);
+    const sf = window.__stopField || recomputeStopField();
+    if (!sf) return;
     for (const line of lineData) {
       const pts = Array.isArray(line.samples) ? line.samples : [];
       if (!pts.length) {
@@ -766,8 +809,12 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       let best = Infinity;
       for (const pt of pts) {
         if (!Array.isArray(pt) || pt.length < 2) continue;
-        const res = nearestStop(grid, pt[0], pt[1], 12, window.__activeRouteFilter);
-        if (res.distM != null && isFinite(res.distM) && res.distM < best) best = res.distM;
+        const snap = nearestGraphNode(pt[0], pt[1]);
+        if (snap.idx == null || snap.snapM == null) continue;
+        const graphD = sf.dist[snap.idx];
+        if (!isFinite(graphD)) continue;
+        const d = snap.snapM + graphD;
+        if (d < best) best = d;
       }
       line.dM = isFinite(best) ? best : null;
     }
@@ -1009,56 +1056,49 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
   function recalcAddressesFromStops(reason, logKey, methodOverride) {
     if (!window.__stopData || !window.__addrData) return;
-
-    function stopAllowedByFilter(s) {
-      if (!window.__activeRouteFilter || window.__activeRouteFilter.size === 0) return true;
-      const routeIds = Array.isArray(s.routeIds) ? s.routeIds : [];
-      for (const rid of routeIds) {
-        if (window.__activeRouteFilter.has(String(rid))) return true;
-      }
-      return false;
-    }
+    const sf = recomputeStopField();
+    const rt = ensureGraphRuntime();
+    if (!sf || !rt) return;
 
     for (const a of window.__addrData) {
+      const asnap = nearestGraphNode(a.lat, a.lon);
       let bestStop = null;
-      let bestDist = Infinity;
-      let bestMethod = null;
+      let bestDist = null;
 
-      for (const s of window.__stopData) {
-        if (!stopAllowedByFilter(s)) continue;
-
-        const sid = (s && s.id != null) ? String(s.id) : '';
-        const pre = (a.stopMetrics && sid && !s.__moved) ? a.stopMetrics[sid] : null;
-
-        let d = null;
-        let method = null;
-
-        if (pre && pre.distM != null && isFinite(pre.distM)) {
-          d = pre.distM;
-          method = pre.methodology || 'roads';
-        } else {
-          d = haversineM(a.lat, a.lon, s.lat, s.lon);
-          method = 'interactive straight-line';
-        }
-
-        if (d != null && isFinite(d) && d < bestDist) {
-          bestDist = d;
-          bestStop = s;
-          bestMethod = method;
+      if (asnap.idx != null && asnap.snapM != null) {
+        const core = sf.dist[asnap.idx];
+        if (isFinite(core)) {
+          bestDist = asnap.snapM + core;
+          const si = sf.sourceStopIdx[asnap.idx];
+          if (si != null && si >= 0 && si < window.__stopData.length) {
+            bestStop = window.__stopData[si];
+          }
         }
       }
 
-      a.distM = isFinite(bestDist) ? bestDist : null;
+      a.distM = bestDist;
       a.nearestStopName = (bestStop && bestStop.name) ? bestStop.name : 'N/A';
       if (methodOverride !== undefined && methodOverride !== null) {
         a.methodology = methodOverride;
       } else {
-        a.methodology = bestMethod || 'N/A';
+        a.methodology = bestDist != null ? 'roads + tracks' : 'N/A';
       }
 
-      // Update highlight route to point at the nearest stop position.
-      if (window.__routeStore && a.id && bestStop) {
-        window.__routeStore[a.id] = [[a.lat, a.lon], [bestStop.lat, bestStop.lon]];
+      // Update highlight route on the graph.
+      if (window.__routeStore && a.id && bestStop && asnap.idx != null) {
+        const coords = [[a.lat, a.lon]];
+        let cur = asnap.idx;
+        const seen = new Set();
+        while (cur != null && cur >= 0 && !seen.has(cur)) {
+          seen.add(cur);
+          const nd = rt.nodes[cur];
+          if (Array.isArray(nd) && nd.length >= 2) coords.push([nd[0], nd[1]]);
+          const nx = sf.parent[cur];
+          if (nx == null || nx < 0) break;
+          cur = nx;
+        }
+        coords.push([bestStop.lat, bestStop.lon]);
+        window.__routeStore[a.id] = coords;
       }
     }
 
@@ -1347,7 +1387,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         ev.target.setLatLng([s.lat, s.lon]);
         s.__moved = true;
         const label = (s.name || s.id || sid);
-        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive straight-line');
+        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'roads + tracks');
       });
 
       // Right click to remove
@@ -1366,7 +1406,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         delete window.__stopMarkers[sid];
 
         // Update distances + stats/log
-        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive straight-line');
+        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'roads + tracks');
       });
 
       window.__stopMarkers[sid] = mk;
@@ -1384,7 +1424,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
-      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive straight-line');
+      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'roads + tracks');
     };
   }
 
@@ -1431,10 +1471,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       ensureStatsPanel();
       installTopRightRouteFilterControl(map);
       installRouteFilter();
-      // initial recolour
-      recolorAll(window.__gradMaxM);
-      // initial stats (no log entry)
-      updateSummary(null);
+      // initial graph-based nearest-stop calculations + recolour/stats
+      recalcAddressesFromStops(null, null, null);
       // add draggable stop overlays
       buildRouteSnapIndex();
       installDraggableStops(map);
@@ -1561,15 +1599,6 @@ def main() -> None:
     if len(stops) > args.max_stops:
         stops = stops.iloc[: args.max_stops].copy()
 
-    stop_latlons = stops[["stop_lat", "stop_lon"]].to_numpy(dtype=np.float64)
-    stop_kd = cKDTree(stop_latlons) if len(stop_latlons) else None
-
-    route_segment_labels = build_route_segment_distance_labels(
-        trips=trips,
-        stops=stops,
-        stop_times=stop_times,
-    )
-
     # --- load + filter addresses ---
     usecols = {
         "WKT",
@@ -1689,41 +1718,6 @@ def main() -> None:
     nodes_arr = np.array([[n[0], n[1]] for n in g.nodes()], dtype=np.float64)
     node_kd = cKDTree(nodes_arr) if len(nodes_arr) else None
 
-    # Precompute stop snap metadata for road/track shortest-path comparisons.
-    stop_node_meta: Dict[str, dict] = {}
-    if node_kd is not None and len(nodes_arr) and len(g.nodes) > 0:
-        for _, s in stops.iterrows():
-            sid = str(s.get("stop_id", "")).strip()
-            if not sid or sid.lower() == "nan":
-                continue
-            slat = float(s["stop_lat"])
-            slon = float(s["stop_lon"])
-            stop_node, _ = snap_to_graph_node(node_kd, nodes_arr, slon, slat)
-            x_st, y_st = tf_to_m.transform(slat, slon)
-            x_en, y_en = tf_to_m.transform(stop_node[1], stop_node[0])
-            stop_node_meta[sid] = {
-                "node": stop_node,
-                "snap_m": float(math.hypot(x_st - x_en, y_st - y_en)),
-            }
-
-    # Precompute stop records to avoid repeated DataFrame iteration in hot loops.
-    stop_records: List[dict] = []
-    for _, s in stops.iterrows():
-        stop_id = str(s.get("stop_id", "")).strip()
-        stop_name = str(s.get("stop_name", "")).strip()
-        stop_code = str(s.get("stop_code", "")).strip()
-        stop_txt = f"{stop_code} — {stop_name}" if stop_code and stop_code != "nan" else stop_name
-        stop_records.append(
-            {
-                "id": stop_id,
-                "lat": float(s["stop_lat"]),
-                "lon": float(s["stop_lon"]),
-                "txt": stop_txt,
-                "node": stop_node_meta.get(stop_id, {}).get("node"),
-                "snap_m": float(stop_node_meta.get(stop_id, {}).get("snap_m", 0.0)),
-            }
-        )
-
     # --- choose map centre ---
     centre_lat = float(addr["lat"].mean())
     centre_lon = float(addr["lon"].mean())
@@ -1733,6 +1727,20 @@ def main() -> None:
         zoom_start=14,
         control_scale=True,
         tiles="CartoDB positron",
+    )
+
+    # Expose routable graph to JS so all interactive distance calculations
+    # are done consistently client-side via roads + tracks.
+    node_to_idx = {n: i for i, n in enumerate(g.nodes())}
+    graph_nodes_js = [[float(lat), float(lon)] for (lon, lat) in g.nodes()]
+    graph_edges_js = [
+        [int(node_to_idx[u]), int(node_to_idx[v]), float(data.get("weight", 0.0))]
+        for u, v, data in g.edges(data=True)
+    ]
+    m.get_root().html.add_child(
+        Element(
+            f"<script>window.__graphData = {json.dumps({'nodes': graph_nodes_js, 'edges': graph_edges_js})};</script>"
+        )
     )
 
     # Store folium map variable name for JS
@@ -1940,13 +1948,7 @@ def main() -> None:
             if ward_geom is not None and not ward_geom.intersects(ls):
                 continue
 
-            d_m = linestring_min_stop_distance_m(
-                ls,
-                stop_kd=stop_kd,
-                stop_latlons=stop_latlons,
-                tf_to_m=tf_to_m,
-                sample_every_m=float(args.road_stop_sample_m),
-            )
+            d_m = None
 
             color = dist_to_green_red_hex(d_m, max_m=float(args.color_max_m))
             d_label = "N/A" if d_m is None else f"{d_m:,.0f} m"
@@ -1989,13 +1991,7 @@ def main() -> None:
         if ward_geom is not None and not ward_geom.intersects(ls):
             continue
 
-        d_m = linestring_min_stop_distance_m(
-            ls,
-            stop_kd=stop_kd,
-            stop_latlons=stop_latlons,
-            tf_to_m=tf_to_m,
-            sample_every_m=float(args.road_stop_sample_m),
-        )
+        d_m = None
 
         color = dist_to_green_red_hex(d_m, max_m=float(args.color_max_m))
         d_label = "N/A" if d_m is None else f"{d_m:,.0f} m"
@@ -2035,126 +2031,13 @@ def main() -> None:
         full_addr = str(a.get("full_address", "")).strip()
         addr_id = str(a.get("address_id", "")).strip()
 
-        nearest_stop_txt = "No stops loaded"
-        dist_txt = "N/A"
-        method_txt = "N/A"
-        roadseg_txt = "N/A"
+        nearest_stop_txt = "(calculating…)"
+        dist_txt = "(calculating…)"
+        method_txt = "roads + tracks"
+        roadseg_txt = "(interactive)"
 
         route_coords: Optional[List[Tuple[float, float]]] = None
         dist_for_colour_m: Optional[float] = None
-
-        stop_metrics: Dict[str, dict] = {}
-        if len(stops):
-            start_node = None
-            snap_a_m = 0.0
-            lengths = None
-
-            if node_kd is not None and len(nodes_arr) and len(g.nodes) > 0:
-                start_node, _ = snap_to_graph_node(node_kd, nodes_arr, lon, lat)
-                x_a, y_a = tf_to_m.transform(lat, lon)
-                x_sn, y_sn = tf_to_m.transform(start_node[1], start_node[0])
-                snap_a_m = float(math.hypot(x_a - x_sn, y_a - y_sn))
-                lengths = nx.single_source_dijkstra_path_length(g, start_node, weight="weight")
-
-            best_distance: Optional[float] = None
-            best_route_coords: Optional[List[Tuple[float, float]]] = None
-            best_method = "N/A"
-            best_roadseg = "N/A"
-            best_stop_txt = "No stops loaded"
-            best_stop_node = None
-            best_stop_lat = None
-            best_stop_lon = None
-            best_direct_m: Optional[float] = None
-            best_network_m: Optional[float] = None
-
-            for srec in stop_records:
-                stop_lat = srec["lat"]
-                stop_lon = srec["lon"]
-                stop_id = srec["id"]
-                stop_txt = srec["txt"]
-
-                direct_m = haversine_m(lat, lon, stop_lat, stop_lon)
-                cand_m = direct_m
-                cand_method = "straight-line"
-                cand_roadseg = "—"
-                cand_node = None
-                cand_network_m = None
-
-                if (
-                    start_node is not None
-                    and lengths is not None
-                    and srec["node"] is not None
-                ):
-                    end_node = srec["node"]
-                    if end_node in lengths:
-                        core_m = float(lengths[end_node])
-                        snap_s_m = srec["snap_m"]
-                        network_m = max(core_m + snap_a_m + snap_s_m, direct_m, 0.0)
-                        cand_network_m = network_m
-                        cand_node = end_node
-                        cand_m = network_m
-                        cand_method = "roads"
-
-                if stop_id and stop_id.lower() != "nan":
-                    stop_metrics[stop_id] = {"distM": float(cand_m), "methodology": cand_method}
-
-                if best_distance is None or cand_m < best_distance:
-                    best_distance = float(cand_m)
-                    best_method = cand_method
-                    best_roadseg = cand_roadseg
-                    best_stop_txt = stop_txt
-                    best_stop_node = cand_node
-                    best_stop_lat = stop_lat
-                    best_stop_lon = stop_lon
-                    best_direct_m = direct_m
-                    best_network_m = cand_network_m
-
-            if (
-                start_node is not None
-                and best_stop_node is not None
-                and best_stop_lat is not None
-                and best_stop_lon is not None
-                and best_direct_m is not None
-                and best_network_m is not None
-            ):
-                try:
-                    node_path = nx.shortest_path(g, start_node, best_stop_node, weight="weight")
-
-                    uses_track = False
-                    for u, v in zip(node_path[:-1], node_path[1:]):
-                        data = g.get_edge_data(u, v) or {}
-                        if str(data.get("kind", "road")) == "track":
-                            uses_track = True
-                            break
-
-                    coords2: List[Tuple[float, float]] = [(lat, lon)]
-                    coords2 += [(n[1], n[0]) for n in node_path]
-                    coords2 += [(best_stop_lat, best_stop_lon)]
-                    cleaned: List[Tuple[float, float]] = []
-                    last = None
-                    for p in coords2:
-                        if last is None or p != last:
-                            cleaned.append(p)
-                        last = p
-                    if len(cleaned) >= 2:
-                        best_route_coords = cleaned
-
-                    best_method = "roads + tracks" if uses_track else "roads"
-                    best_roadseg = str(max(0, len(node_path) - 1))
-                    best_distance = max(float(best_network_m), float(best_direct_m), 0.0)
-                except Exception:
-                    # Keep straight-line/default route if path extraction fails.
-                    best_route_coords = [(lat, lon), (best_stop_lat, best_stop_lon)]
-            elif best_stop_lat is not None and best_stop_lon is not None:
-                best_route_coords = [(lat, lon), (best_stop_lat, best_stop_lon)]
-
-            if best_distance is not None:
-                nearest_stop_txt = best_stop_txt
-                dist_for_colour_m = best_distance
-                dist_txt = f"{best_distance:,.0f} m"
-                method_txt = best_method
-                roadseg_txt = best_roadseg
-                route_coords = best_route_coords
 
         # Register route in JS store (only for this address)
         if route_coords is not None and addr_id:
@@ -2215,7 +2098,6 @@ def main() -> None:
                 "nearestStopName": nearest_stop_txt,
                 "distM": float(dist_for_colour_m) if dist_for_colour_m is not None else None,
                 "methodology": method_txt,
-                "stopMetrics": stop_metrics,
             }
         )
 
