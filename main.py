@@ -817,7 +817,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
         // Update distances + stats/log
         recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`);
-        updateSummary(`stop removed: ${label}`, `stop:${sid}`);
       });
 
       window.__stopMarkers[sid] = mk;
@@ -834,7 +833,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       window.__stopData.push(s);
       addStopMarkerFor(s);
       recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`);
-      updateSummary(`stop added: ${s.name}`, `stop:${sid}`);
     };
   }
 
