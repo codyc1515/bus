@@ -1622,7 +1622,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       // Avoid duplicating
       if (window.__stopMarkers[sid]) return window.__stopMarkers[sid];
 
-      snapStopToRouteLine(s);
       const stopName = String(s.stopName || s.name || '').trim() || 'Unknown stop';
       const stopCode = String(s.stopCode || '').trim();
       const stopTitle = stopCode ? `${stopCode} — ${stopName}` : stopName;
@@ -1653,8 +1652,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         const ll = ev.target.getLatLng();
         s.lat = ll.lat;
         s.lon = ll.lng;
-        snapStopToRouteLine(s);
-        ev.target.setLatLng([s.lat, s.lon]);
         s.__moved = true;
         if (window.__activeStopHighlight === sid) {
           applyStopRoadTrackHighlight(s, sid, true);
@@ -1702,7 +1699,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     window.__addStop = function(lat, lon, name, routeIdHint) {
       const routeIds = routeIdHint ? [String(routeIdHint)] : Array.from(window.__activeRouteFilter || []);
       const s = { id: '', lat: lat, lon: lon, name: name || 'New stop', routeIds: routeIds, __moved: true };
-      snapStopToRouteLine(s);
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
