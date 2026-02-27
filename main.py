@@ -1077,7 +1077,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     // Roads (we store per-poly distance as dM)
     if (window.__roadData) {
-      const stopHighlightActive = !!(window.__activeStopHighlight || window.__hoverStopHighlight);
+      const stopHighlightActive = !!window.__activeStopHighlight;
       for (const r of window.__roadData) {
         const poly = getByName(r.polyRefName);
         if (!poly) continue;
@@ -1106,7 +1106,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     // Tracks
     if (window.__trackData) {
-      const stopHighlightActive = !!(window.__activeStopHighlight || window.__hoverStopHighlight);
+      const stopHighlightActive = !!window.__activeStopHighlight;
       for (const t of window.__trackData) {
         const poly = getByName(t.polyRefName);
         if (!poly) continue;
@@ -1712,13 +1712,41 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     function clearStopRoadTrackHighlight() {
       window.__activeStopHighlight = null;
-      window.__hoverStopHighlight = null;
       recalcLineDistancesFromStops(window.__roadData);
       recalcLineDistancesFromStops(window.__trackData);
       recolorAll(window.__gradMaxM);
     }
 
-    function applyStopRoadTrackHighlight(s, sid, isPersistent) {
+    function escapeHtml(text) {
+      return String(text == null ? '' : text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function stopPopupHtml(s) {
+      const stopName = String((s && (s.stopName || s.name)) || '').trim() || 'Unknown stop';
+      const stopCodeRaw = String((s && s.stopCode) || '').trim();
+      const stopCode = (stopCodeRaw && stopCodeRaw.toLowerCase() !== 'nan') ? stopCodeRaw : null;
+
+      const routeLabels = Array.isArray(s && s.routeLabels) ? s.routeLabels : [];
+      const routeLabelHtml = routeLabels.length
+        ? `<div>${routeLabels.map(rl => `<span style="display:inline-block; margin:2px 6px 2px 0; padding:2px 6px; border-radius:10px; background:#e3f2fd; color:#0d47a1; border:1px solid #bbdefb;">${escapeHtml(rl)}</span>`).join('')}</div>`
+        : '<div style="color:#666;">No route data</div>';
+
+      return `
+        <div style="min-width:220px; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size:12px;">
+          <div style="font-weight:700; margin-bottom:6px;">${escapeHtml(stopName)}</div>
+          <div><b>Stop number:</b> ${stopCode ? escapeHtml(stopCode) : 'N/A'}</div>
+          <div style="margin-top:6px;"><b>Routes:</b></div>
+          ${routeLabelHtml}
+        </div>
+      `;
+    }
+
+    function applyStopRoadTrackHighlight(s, sid) {
       const snap = nearestGraphNode(s.lat, s.lon);
       if (snap.idx == null || snap.snapM == null) {
         clearStopRoadTrackHighlight();
@@ -1735,12 +1763,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       recalcLineDistancesFromStop(window.__trackData, sf);
       recolorAll(window.__gradMaxM);
 
-      if (isPersistent) {
-        window.__activeStopHighlight = sid;
-        window.__hoverStopHighlight = null;
-      } else {
-        window.__hoverStopHighlight = sid;
-      }
+      window.__activeStopHighlight = sid;
     }
 
     function refreshStopRoadTrackHighlight() {
@@ -1748,7 +1771,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       if (activeSid && window.__stopMarkers[activeSid]) {
         const stop = window.__stopMarkers[activeSid].__stopRef;
         if (stop) {
-          applyStopRoadTrackHighlight(stop, activeSid, true);
+          applyStopRoadTrackHighlight(stop, activeSid);
           return;
         }
       }
@@ -1766,24 +1789,15 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const mk = L.marker([s.lat, s.lon], { pane: "stopsPane", draggable: true, icon: dot, title: stopTitle || sid }).addTo(map);
       mk.__stopRef = s;
 
-      mk.on('mouseover', function() {
-        if (window.__activeStopHighlight) return;
-        applyStopRoadTrackHighlight(s, sid, false);
-      });
-
-      mk.on('mouseout', function() {
-        if (window.__activeStopHighlight) return;
-        if (window.__hoverStopHighlight === sid) {
-          clearStopRoadTrackHighlight();
-        }
-      });
-
       mk.on('click', function() {
         if (window.__activeStopHighlight === sid) {
           clearStopRoadTrackHighlight();
+          if (mk.closePopup) mk.closePopup();
           return;
         }
-        applyStopRoadTrackHighlight(s, sid, true);
+        applyStopRoadTrackHighlight(s, sid);
+        mk.bindPopup(stopPopupHtml(s), { maxWidth: 320 });
+        mk.openPopup();
       });
 
       mk.on('dragend', function(ev) {
@@ -1792,9 +1806,9 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         s.lon = ll.lng;
         s.__moved = true;
         if (window.__activeStopHighlight === sid) {
-          applyStopRoadTrackHighlight(s, sid, true);
-        } else if (!window.__activeStopHighlight && window.__hoverStopHighlight === sid) {
-          applyStopRoadTrackHighlight(s, sid, false);
+          applyStopRoadTrackHighlight(s, sid);
+          mk.bindPopup(stopPopupHtml(s), { maxWidth: 320 });
+          mk.openPopup();
         }
         const label = (s.name || s.id || sid);
         recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'roads + tracks');
@@ -1818,7 +1832,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         // Remove marker registry
         delete window.__stopMarkers[sid];
 
-        if (window.__activeStopHighlight === sid || window.__hoverStopHighlight === sid) {
+        if (window.__activeStopHighlight === sid) {
           clearStopRoadTrackHighlight();
         }
 
@@ -2224,6 +2238,7 @@ def main() -> None:
         available_route_ids_in_bounds.update(stop_route_ids.get(str(sid), set()))
     route_options_js: List[dict] = []
     route_value_to_ids_js: Dict[str, List[str]] = {}
+    route_label_by_id: Dict[str, str] = {}
     if routes_idx is not None:
         grouped_route_ids_by_label: Dict[str, Set[str]] = {}
         for rid in available_route_ids_in_bounds:
@@ -2236,6 +2251,7 @@ def main() -> None:
                 label = f"{short_name} {long_name}"
             else:
                 label = short_name or long_name or f"route {rid}"
+            route_label_by_id[str(rid)] = label
             grouped_route_ids_by_label.setdefault(label, set()).add(str(rid))
 
         for label in sorted(grouped_route_ids_by_label.keys(), key=natural_route_sort_key):
@@ -2295,6 +2311,7 @@ def main() -> None:
         lon_s = float(s["stop_lon"])
 
         sid = str(s.get("stop_id", ""))
+        stop_routes = sorted(list(stop_route_ids.get(sid, set())))
         stop_js_data.append({
             "id": sid,
             "lat": lat_s,
@@ -2302,7 +2319,8 @@ def main() -> None:
             "stopName": stop_name,
             "stopCode": stop_code,
             "name": title,
-            "routeIds": sorted(list(stop_route_ids.get(sid, set()))),
+            "routeIds": stop_routes,
+            "routeLabels": [route_label_by_id.get(rid, f"route {rid}") for rid in stop_routes],
             "distanceDetails": stop_distance_details.get(sid, []),
         })
 
