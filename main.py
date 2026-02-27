@@ -27,7 +27,7 @@ Usage example:
     --addresses lds-nz-addresses-CSV/nz-addresses.csv \
     --roads lds-nz-roads-road-section-geometry-CSV/nz-roads-road-section-geometry.csv \
     --gtfs gtfs \
-    --out index.html
+    --out map.html
 
 Notes:
 - Plotting all NZ addresses in one HTML is not practical. Use --bbox/--ward/--town/--ta and/or --max-addresses.
@@ -2375,7 +2375,7 @@ def main() -> None:
         ),
     )
     ap.add_argument("--gtfs", default="gtfs", help="Path to GTFS folder (contains routes.txt, stops.txt, shapes.txt, trips.txt, ...)")
-    ap.add_argument("--out", default="index.html", help="Output HTML filename")
+    ap.add_argument("--out", default="map.html", help="Output HTML filename")
 
     ap.add_argument("--town", default=None, help="Filter addresses by town_city (e.g. 'Christchurch')")
     ap.add_argument("--ta", default=None, help="Filter addresses by territorial_authority (e.g. 'Christchurch City')")
