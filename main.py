@@ -1388,7 +1388,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       if (window.__stopMarkers[sid]) return window.__stopMarkers[sid];
 
       snapStopToRouteLine(s);
-      const mk = L.marker([s.lat, s.lon], { draggable: true, icon: dot, title: s.name || sid }).addTo(map);
+      const mk = L.marker([s.lat, s.lon], { pane: "stopsPane", draggable: true, icon: dot, title: s.name || sid }).addTo(map);
 
       mk.on('dragend', function(ev) {
         const ll = ev.target.getLatLng();
@@ -1746,6 +1746,11 @@ def main() -> None:
         tiles="CartoDB positron",
     )
 
+    # Explicit layer stack (bottom -> top): roads, routes, stops.
+    folium.map.CustomPane("roadsPane", z_index=410).add_to(m)
+    folium.map.CustomPane("routesPane", z_index=420).add_to(m)
+    folium.map.CustomPane("stopsPane", z_index=430).add_to(m)
+
     # Expose routable graph to JS so all interactive distance calculations
     # are done consistently client-side via roads + tracks.
     node_to_idx = {n: i for i, n in enumerate(g.nodes())}
@@ -1780,6 +1785,7 @@ def main() -> None:
       if (!coords || coords.length < 2) return;
 
       window.__activeRouteLine = L.polyline(coords, {
+        pane: 'routesPane',
         weight: 6,
         opacity: 0.9
       }).addTo(map);
@@ -1848,6 +1854,7 @@ def main() -> None:
         for line in (polylines if max_shapes is None else polylines[:max_shapes]):
             poly_route = folium.PolyLine(
                 locations=[(lat, lon) for (lat, lon) in line],
+                pane="routesPane",
                 weight=3,
                 opacity=0.8,
                 tooltip=label,
@@ -1882,8 +1889,7 @@ def main() -> None:
     m.get_root().html.add_child(Element(f"<script>window.__routeShapeRefs = {json.dumps(route_shape_refs)};</script>"))
     m.get_root().html.add_child(Element(f"<script>window.__routeShapeMeta = {json.dumps(route_shape_meta)};</script>"))
 
-    # --- layer: stops (static circles) ---
-    fg_stops = folium.FeatureGroup(name="Bus stops", show=True)
+    # --- stops data for draggable JS overlay (no static stop markers) ---
     stop_js_data: List[dict] = []
 
     for _, s in stops.iterrows():
@@ -1894,16 +1900,6 @@ def main() -> None:
         lat_s = float(s["stop_lat"])
         lon_s = float(s["stop_lon"])
 
-        folium.CircleMarker(
-            location=[lat_s, lon_s],
-            radius=3,
-            weight=1,
-            fill=True,
-            fill_opacity=0.9,
-            tooltip=title,
-            popup=folium.Popup(title, max_width=300),
-        ).add_to(fg_stops)
-
         sid = str(s.get("stop_id", ""))
         stop_js_data.append({
             "id": sid,
@@ -1912,8 +1908,6 @@ def main() -> None:
             "name": title,
             "routeIds": sorted(list(stop_route_ids.get(sid, set()))),
         })
-
-    fg_stops.add_to(m)
 
     # Expose stops to JS for draggable overlay
     m.get_root().html.add_child(Element(f"<script>window.__stopData = {json.dumps(stop_js_data)};</script>"))
@@ -1974,6 +1968,7 @@ def main() -> None:
 
             poly = folium.PolyLine(
                 locations=[(y, x) for (x, y) in coords],
+                pane="roadsPane",
                 weight=float(args.road_draw_weight),
                 opacity=0.75,
                 color=color,
@@ -2016,6 +2011,7 @@ def main() -> None:
 
         poly = folium.PolyLine(
             locations=[(y, x) for (x, y) in coords],
+            pane="roadsPane",
             weight=max(2.0, float(args.road_draw_weight) - 0.5),
             opacity=0.8,
             color=color,
