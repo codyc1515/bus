@@ -767,12 +767,6 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         <div>Addresses served</div><div id="__svcServed" style="font-weight:700; text-align:right;">—</div>
         <div>Addresses not served</div><div id="__svcUnserved" style="font-weight:700; text-align:right;">—</div>
       </div>
-      <div style="margin-top:8px;">
-        <div style="font-weight:600; margin-bottom:4px;">Routes to include (multi-select)</div>
-        <select id="__routeFilter" multiple size="6" style="width:100%; font-size:12px;"></select>
-      </div>
-      <div style="margin-top:10px; font-weight:700;">Change log</div>
-      <div id="__svcLog" style="margin-top:6px; max-height:260px; overflow:auto; padding-right:4px;"></div>
     `;
 
     document.body.appendChild(panel);
@@ -956,6 +950,34 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     });
   }
 
+  function installTopRightRouteFilterControl(map) {
+    if (!map || !L || !L.control) return;
+
+    const RouteFilterControl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd: function() {
+        const wrap = L.DomUtil.create('div', 'leaflet-bar');
+        wrap.style.background = 'rgba(255,255,255,0.95)';
+        wrap.style.padding = '8px';
+        wrap.style.width = '250px';
+        wrap.style.boxShadow = '0 2px 10px rgba(0,0,0,0.12)';
+        wrap.style.borderRadius = '6px';
+        wrap.innerHTML = `
+          <div style="font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size:12px; font-weight:600; margin-bottom:4px;">
+            Routes to include
+          </div>
+          <select id="__routeFilter" multiple size="8" style="width:100%; font-size:12px;"></select>
+        `;
+
+        L.DomEvent.disableClickPropagation(wrap);
+        L.DomEvent.disableScrollPropagation(wrap);
+        return wrap;
+      }
+    });
+
+    map.addControl(new RouteFilterControl());
+  }
+
   function installSlider(map) {
     const wrap = document.createElement('div');
     wrap.style.position = 'fixed';
@@ -1114,6 +1136,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
       installSlider(map);
       ensureStatsPanel();
+      installTopRightRouteFilterControl(map);
       installRouteFilter();
       // initial recolour
       recolorAll(window.__gradMaxM);
@@ -1514,7 +1537,7 @@ def main() -> None:
     m.get_root().html.add_child(Element(f"<script>window.__routeValueToIds = {json.dumps(route_value_to_ids_js)};</script>"))
 
     # --- layer: roads (visual + coloured by nearest stop distance) ---
-    fg_roads = folium.FeatureGroup(name="Roads (distance to stop)", show=False)
+    fg_roads = folium.FeatureGroup(name="Roads (distance to stop)", show=True)
     display_roads = roads.head(min(len(roads), int(args.display_road_limit)))
 
     road_js: List[dict] = []
@@ -1749,7 +1772,6 @@ def main() -> None:
     m.get_root().html.add_child(Element(f"<script>window.__gradMaxM = {float(args.color_max_m)};</script>"))
     add_ui_and_interaction_js(m)
 
-    folium.LayerControl(collapsed=False).add_to(m)
 
     m.save(args.out)
 
