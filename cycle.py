@@ -316,7 +316,7 @@ def main() -> None:
     ap.add_argument("--addresses", default="lds-nz-addresses-CSV/nz-addresses.csv")
     ap.add_argument("--cycleways", default="Cycleway_(OpenData).geojson")
     ap.add_argument("--ward-geojson", default="Ward_(OpenData).geojson")
-    ap.add_argument("--out", default="cycling.html")
+    ap.add_argument("--out", default="cycle.html")
     ap.add_argument("--bbox", nargs="+", type=float, default=None)
     ap.add_argument("--ward", default=None)
     ap.add_argument("--town", default=None)
