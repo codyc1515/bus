@@ -910,7 +910,9 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
     recolorAll(window.__gradMaxM);
     updateAddressPopups();
-    updateSummary(reason || 'bus stop moved', logKey || 'stop:unknown');
+    const summaryReason = (reason === undefined) ? 'bus stop moved' : reason;
+    const summaryKey = (logKey === undefined) ? 'stop:unknown' : logKey;
+    updateSummary(summaryReason, summaryKey);
   }
 
   function populateRouteFilterOptions() {
