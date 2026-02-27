@@ -16,9 +16,9 @@ NEW:
 - Address markers are coloured the same way.
 - UI slider lets you change the colour-scale max from 400→800m (live recolour).
 - Bus stops are draggable: on drag-end, the nearest-stop distance for EACH address
-  is recalculated in the browser (straight-line), and colours + popups update.
-  (Routing via the road graph is still computed server-side at build time; for
-  interactive dragging we use straight-line as a fast approximation.)
+  is recalculated in the browser using a straight-line fallback only when
+  network routing is unavailable client-side, and colours + popups update.
+  (Routing via the road graph is still computed server-side at build time.)
 
 Dependencies:
   pip install pandas numpy shapely pyproj folium networkx scipy
@@ -848,7 +848,8 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       }
 
       // Update highlight route to point at the NEW nearest stop position.
-      // We only have straight-line client-side, so set route to [address, stop].
+      // Client-side road graph routing is unavailable, so we must fall back
+      // to straight-line routes [address, stop].
       if (window.__routeStore && a.id && res.stop) {
         window.__routeStore[a.id] = [[a.lat, a.lon], [res.stop.lat, res.stop.lon]];
       }
@@ -968,7 +969,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         s.lat = ll.lat;
         s.lon = ll.lng;
         const label = (s.name || s.id || sid);
-        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive (straight-line)');
+        recalcAddressesFromStops(`stop moved: ${label}`, `stop:${sid}`, 'interactive (fallback: straight-line; network routing unavailable client-side)');
       });
 
       // Right click to remove
@@ -987,7 +988,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         delete window.__stopMarkers[sid];
 
         // Update distances + stats/log
-        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive (straight-line)');
+        recalcAddressesFromStops(`stop removed: ${label}`, `stop:${sid}`, 'interactive (fallback: straight-line; network routing unavailable client-side)');
       });
 
       window.__stopMarkers[sid] = mk;
@@ -1003,7 +1004,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       const sid = ensureStopId(s);
       window.__stopData.push(s);
       addStopMarkerFor(s);
-      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive (straight-line)');
+      recalcAddressesFromStops(`stop added: ${s.name}`, `stop:${sid}`, 'interactive (fallback: straight-line; network routing unavailable client-side)');
     };
   }
 
