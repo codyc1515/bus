@@ -1635,6 +1635,33 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
   }
 
+  function buildAddressRouteCoords(a, idx, sf, rt) {
+    if (!a || !sf || !rt || !window.__stopData) return null;
+    const asnap = nearestGraphNode(a.lat, a.lon);
+    if (asnap.idx == null || asnap.snapM == null) return null;
+
+    const core = sf.dist[asnap.idx];
+    if (!isFinite(core)) return null;
+    const si = sf.sourceStopIdx[asnap.idx];
+    if (si == null || si < 0 || si >= window.__stopData.length) return null;
+    const bestStop = window.__stopData[si];
+    if (!bestStop || !isFinite(bestStop.lat) || !isFinite(bestStop.lon)) return null;
+
+    const coords = [[a.lat, a.lon]];
+    let cur = asnap.idx;
+    const seen = new Set();
+    while (cur != null && cur >= 0 && !seen.has(cur)) {
+      seen.add(cur);
+      const nd = rt.nodes[cur];
+      if (Array.isArray(nd) && nd.length >= 2) coords.push([nd[0], nd[1]]);
+      const nx = sf.parent[cur];
+      if (nx == null || nx < 0) break;
+      cur = nx;
+    }
+    coords.push([bestStop.lat, bestStop.lon]);
+    return coords;
+  }
+
   function recalcAddressesFromStops(reason, logKey, methodOverride) {
     if (!window.__stopData || !window.__addrData) return;
     const sf = recomputeStopField();
@@ -1668,20 +1695,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
 
       // Update highlight route on the graph.
       const routeKey = addressRouteKey(a, i);
-      if (window.__routeStore && routeKey && bestStop && asnap.idx != null) {
-        const coords = [[a.lat, a.lon]];
-        let cur = asnap.idx;
-        const seen = new Set();
-        while (cur != null && cur >= 0 && !seen.has(cur)) {
-          seen.add(cur);
-          const nd = rt.nodes[cur];
-          if (Array.isArray(nd) && nd.length >= 2) coords.push([nd[0], nd[1]]);
-          const nx = sf.parent[cur];
-          if (nx == null || nx < 0) break;
-          cur = nx;
+      if (window.__routeStore && routeKey) {
+        const coords = buildAddressRouteCoords(a, i, sf, rt);
+        if (coords && coords.length >= 2) {
+          window.__routeStore[routeKey] = coords;
         }
-        coords.push([bestStop.lat, bestStop.lon]);
-        window.__routeStore[routeKey] = coords;
       }
     }
 
@@ -2221,6 +2239,31 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
   }
 
 
+
+  function showAddressRoute(map, a, idx) {
+    if (!window.__showRoute) return;
+    const routeKey = addressRouteKey(a, idx);
+    if (!routeKey) return;
+
+    let coords = null;
+    if (window.__routeStore) {
+      coords = window.__routeStore[routeKey] || null;
+    }
+
+    if ((!coords || coords.length < 2) && a) {
+      const sf = window.__stopField || recomputeStopField();
+      const rt = ensureGraphRuntime();
+      if (sf && rt) {
+        coords = buildAddressRouteCoords(a, idx, sf, rt);
+        if (coords && coords.length >= 2 && window.__routeStore) {
+          window.__routeStore[routeKey] = coords;
+        }
+      }
+    }
+
+    window.__showRoute(map, routeKey);
+  }
+
   function installClientLayers(map) {
     if (!map) return;
 
@@ -2280,7 +2323,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
           c.bindPopup(html, { maxWidth: 360 });
         }
         c.on('click', function() {
-          if (window.__showRoute) window.__showRoute(map, routeKey);
+          showAddressRoute(map, a, i);
         });
         c.addTo(window.__addrLayerGroup);
         a.layerRef = c;
