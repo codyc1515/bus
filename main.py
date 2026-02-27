@@ -1226,27 +1226,26 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     return `idx:${idx}`;
   }
 
-  function getServedIdSet(thresholdM) {
-    const ids = new Set();
-    if (!window.__addrData) return ids;
+  function servedDeltaBreakdown(thresholdM) {
+    const baselineServedIds = new Set();
+    const currentServedIds = new Set();
+    if (!window.__addrData) return { gained: 0, lost: 0, net: 0 };
     for (let i = 0; i < window.__addrData.length; i++) {
       const a = window.__addrData[i];
-      if (a.distM != null && isFinite(a.distM) && a.distM <= thresholdM) {
-        ids.add(addressKey(a, i));
-      }
+      const id = addressKey(a, i);
+      const baseServed = !!(a && a.baseServed);
+      const currentServed = !!(a && a.distM != null && isFinite(a.distM) && a.distM <= thresholdM);
+      if (baseServed) baselineServedIds.add(id);
+      if (currentServed) currentServedIds.add(id);
     }
-    return ids;
-  }
 
-  function servedDeltaBreakdown(baseServedIds, thresholdM) {
-    const currentServedIds = getServedIdSet(thresholdM);
     let gained = 0;
     let lost = 0;
 
     for (const id of currentServedIds) {
-      if (!baseServedIds.has(id)) gained++;
+      if (!baselineServedIds.has(id)) gained++;
     }
-    for (const id of baseServedIds) {
+    for (const id of baselineServedIds) {
       if (!currentServedIds.has(id)) lost++;
     }
 
@@ -1332,21 +1331,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
       renderStartingStats(nextStats);
     }
 
-    // For each log key, keep a stable baseline so entries show net change from
-    // the original state and disappear when they return to zero.
-    if (!window.__baseServedIdsByKey) window.__baseServedIdsByKey = {};
-
     renderStats(nextStats);
 
     if (reason) {
       const key = logKey || reason;
-      if (!window.__baseServedIdsByKey[key]) {
-        const baselineThreshold = (window.__startingSvcStats && isFinite(window.__startingSvcStats.thresholdM))
-          ? window.__startingSvcStats.thresholdM
-          : nextStats.thresholdM;
-        window.__baseServedIdsByKey[key] = getServedIdSet(baselineThreshold);
-      }
-      const delta = servedDeltaBreakdown(window.__baseServedIdsByKey[key], nextStats.thresholdM);
+      const delta = servedDeltaBreakdown(nextStats.thresholdM);
       appendLogLine(key, reason, delta);
     }
 
@@ -1454,6 +1443,11 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
     }
     recolorAll(window.__gradMaxM);
     renderStartingStats(nextStats);
+
+    // Reset activity log because baseline has changed.
+    const log = document.getElementById('__svcLog');
+    if (log) log.innerHTML = '';
+    window.__logEntryEls = {};
   }
 
   function installRouteFilter() {
