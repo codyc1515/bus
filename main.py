@@ -1853,10 +1853,45 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         .replace(/'/g, '&#39;');
     }
 
+    function ensureAddressSnapIndex() {
+      if (window.__addrSnapIndex) return window.__addrSnapIndex;
+      const out = [];
+      const addrs = Array.isArray(window.__addrData) ? window.__addrData : [];
+      for (const a of addrs) {
+        if (!a || !isFinite(a.lat) || !isFinite(a.lon)) continue;
+        const snap = nearestGraphNode(a.lat, a.lon);
+        if (snap.idx == null || snap.snapM == null || !isFinite(snap.snapM)) continue;
+        out.push({ idx: snap.idx, snapM: snap.snapM });
+      }
+      window.__addrSnapIndex = out;
+      return out;
+    }
+
+    function countReachableAddressesFromStop(stop, maxM) {
+      if (!stop || !isFinite(stop.lat) || !isFinite(stop.lon) || !isFinite(maxM)) return 0;
+      const stopSnap = nearestGraphNode(stop.lat, stop.lon);
+      if (stopSnap.idx == null || stopSnap.snapM == null || !isFinite(stopSnap.snapM)) return 0;
+      const sf = runDijkstraFromSources([{ idx: stopSnap.idx, snapM: stopSnap.snapM }]);
+      if (!sf || !Array.isArray(sf.dist)) return 0;
+
+      let count = 0;
+      const addrSnaps = ensureAddressSnapIndex();
+      for (const a of addrSnaps) {
+        if (!a || a.idx == null || a.snapM == null) continue;
+        const core = sf.dist[a.idx];
+        if (!isFinite(core)) continue;
+        const total = a.snapM + core;
+        if (isFinite(total) && total <= maxM) count++;
+      }
+      return count;
+    }
+
     function stopPopupHtml(s) {
       const stopName = String((s && (s.stopName || s.name)) || '').trim() || 'Unknown stop';
       const stopCodeRaw = String((s && s.stopCode) || '').trim();
       const stopCode = (stopCodeRaw && stopCodeRaw.toLowerCase() !== 'nan') ? stopCodeRaw : null;
+      const maxM = (window.__gradMaxM != null && isFinite(window.__gradMaxM)) ? Number(window.__gradMaxM) : 400;
+      const reachableCount = countReachableAddressesFromStop(s, maxM);
 
       const routeLabels = Array.isArray(s && s.routeLabels) ? s.routeLabels : [];
       const routeLabelHtml = routeLabels.length
@@ -1867,6 +1902,7 @@ def add_ui_and_interaction_js(m: folium.Map) -> None:
         <div style="min-width:220px; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size:12px;">
           <div style="font-weight:700; margin-bottom:6px;">${escapeHtml(stopName)}</div>
           <div><b>Stop number:</b> ${stopCode ? escapeHtml(stopCode) : 'N/A'}</div>
+          <div><b>Addresses within ${Math.round(maxM)} m walk:</b> ${reachableCount.toLocaleString()}</div>
           <div style="margin-top:6px;"><b>Routes:</b></div>
           ${routeLabelHtml}
         </div>
